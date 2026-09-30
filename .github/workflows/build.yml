@@ -45,6 +45,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: cargo test -p dos-core
+      # The installer bundles dosctl.exe, and Tauri's build script checks the
+      # file exists — so build it before anything compiles the app crate.
+      - name: Build dosctl
+        run: cargo build --release -p dosctl
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Build installer
         run: npm run pack
