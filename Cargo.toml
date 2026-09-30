@@ -1,0 +1,45 @@
+[workspace]
+members = ["src-tauri", "crates/dos-core", "crates/dos-win", "crates/dosctl"]
+# dos-win only builds on Windows; everything else builds anywhere.
+default-members = ["src-tauri", "crates/dos-core", "crates/dosctl"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Elijah Ndeto Mutiso"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+windows = { version = "0.61", features = [
+  "Foundation",
+  "Foundation_Collections",
+  "Globalization",
+  "Media_Core",
+  "Media_SpeechRecognition",
+  "Media_SpeechSynthesis",
+  "Storage_Streams",
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_Registry",
+  "Win32_System_Threading",
+  "Win32_System_WinRT",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+# The relay CLI is spawned by Hermes on every message: keep it small and quick.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,13 @@
+<!doctype html>
+<!-- Renders the app icon from the live Dos face. Dev only: npm run dev, open /dev/icon.html. -->
+<html><body style="margin:0;background:transparent">
+<div id="tile" style="width:512px;height:512px;border-radius:112px;background:radial-gradient(circle at 50% 38%,#0d1a14 0%,#000 70%);display:grid;place-items:center">
+  <canvas id="c" style="width:420px;height:470px"></canvas>
+</div>
+<script type="module">
+  import { DosFace } from "/src/dos.ts";
+  const f = new DosFace(document.getElementById("c"));
+  f.lookAt(210, 180);
+  f.start();
+</script>
+</body></html>

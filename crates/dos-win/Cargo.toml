@@ -1,0 +1,10 @@
+[package]
+name = "dos-win"
+description = "The Windows-only parts of Dos Live: speech in and out, the relay pipe, call guard, window stealth."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+windows.workspace = true
+windows-collections = "0.2"

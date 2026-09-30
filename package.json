@@ -1,0 +1,26 @@
+{
+  "name": "dos-live",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "predev:app": "cargo build --release -p dosctl",
+    "dev:app": "tauri dev",
+    "prepack": "cargo build --release -p dosctl",
+    "pack": "tauri build",
+    "icons": "tauri icon icons/dos-icon.png -o src-tauri/icons"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "^5.6.0",
+    "vite": "^6"
+  },
+  "dependencies": {
+    "@fontsource/jetbrains-mono": "^5",
+    "@tauri-apps/api": "^2"
+  }
+}

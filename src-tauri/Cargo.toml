@@ -1,0 +1,31 @@
+[package]
+name = "dos-live"
+description = "Dos Live — Dos, on your screen: live pings, your worlds, questions that need you, and a voice."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "dos_live_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+dos-core = { path = "../crates/dos-core" }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-global-shortcut = "2"
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+keyring = { version = "3", features = ["windows-native"] }
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+dos-win = { path = "../crates/dos-win" }

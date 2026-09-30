@@ -1,0 +1,13 @@
+[package]
+name = "dosctl"
+description = "Talk to Dos Live from a script or an agent: say, ask, status."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dos-core = { path = "../dos-core" }
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+dos-win = { path = "../dos-win" }

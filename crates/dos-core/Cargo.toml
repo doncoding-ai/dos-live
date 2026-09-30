@@ -1,0 +1,11 @@
+[package]
+name = "dos-core"
+description = "Dos Live's brain: Trello snapshot, worlds, pings, asks, voice intents. No OS code, fully testable anywhere."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
