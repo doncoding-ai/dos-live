@@ -26,6 +26,10 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
     dos_win::window::cursor_pos()
 }
 
+pub fn left_button_down() -> bool {
+    dos_win::window::left_button_down()
+}
+
 pub fn window_origin(hwnd: isize) -> Option<(i32, i32)> {
     dos_win::window::window_origin(hwnd)
 }

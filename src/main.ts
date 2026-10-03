@@ -1,5 +1,6 @@
-// The island: a terminal bar hugging the top edge of the screen that drops
-// open into Dos's panel (feed, worlds, questions) or a single alert card.
+// The island: a terminal bar hugging the top edge of a screen (or dragged
+// anywhere) that drops open into Dos's panel (feed, worlds, questions) or a
+// single alert card. Idle, it tucks away; the hotkey hides it outright.
 
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/600.css";
@@ -13,6 +14,8 @@ import { enqueue, setVoiceVolume, stopAll } from "./speech";
 import type { Alert, Ask, FeedItem, Settings, ViewState, WorldStatus } from "./types";
 
 type Mode = "bar" | "panel" | "alert";
+/** shown · tucked (idle: slid up to a line, or faded when floating) · gone (hidden with the hotkey). */
+type Vis = "shown" | "tucked" | "gone";
 type Tab = "feed" | "worlds" | "asks";
 
 const $ = <T extends HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
@@ -33,11 +36,17 @@ let openWorld: string | null = null;
 let tickerTarget = "";
 let tickerShown = "";
 let tickerTimer = 0;
+let vis: Vis = "shown";
+let hiddenByUser = false;
+let lastActive = Date.now();
+let dragging = false;
+let suppressClick = false;
+let press: { x: number; y: number } | null = null;
 
 const root = $("#root");
 root.innerHTML = `
 <div id="shell" class="shell mode-bar" role="region" aria-label="Dos Live">
-  <header class="bar" title="Open Dos">
+  <header class="bar" title="Click to open · drag to move">
     <canvas class="mini-face" aria-hidden="true"></canvas>
     <span class="prompt"><b>dos</b><span class="dim">:~$</span></span>
     <span class="ticker" aria-live="polite"><span class="ticker-text"></span><span class="caret"></span></span>
@@ -109,10 +118,49 @@ function worldById(id: string | null): WorldStatus | undefined {
 // ── geometry: tell Rust which part of the window takes the mouse ────────────
 
 function pushRect() {
+  // Gone: no part of the window takes the mouse.
+  if (vis === "gone") return void Bridge.setRect(0, 0, 0, 0);
   const r = shell.getBoundingClientRect();
   void Bridge.setRect(r.left, r.top, r.width, r.height);
 }
 new ResizeObserver(pushRect).observe(shell);
+// Tucking slides with a transform, which ResizeObserver doesn't see.
+shell.addEventListener("transitionend", pushRect);
+
+// ── tuck & hide ─────────────────────────────────────────────────────────────
+
+function wantVis(): Vis {
+  const now = Date.now();
+  if (dragging || hovering) return "shown";
+  const busy = mode !== "bar" || playing || state.voice.dictating || now < thinkingUntil;
+  if (busy) {
+    lastActive = now;
+    return "shown";
+  }
+  if (hiddenByUser) return "gone";
+  if (settings.ui.autoHide && now - lastActive > settings.ui.hideAfterSecs * 1000) return "tucked";
+  return "shown";
+}
+
+function applyVis() {
+  const next = wantVis();
+  if (next === vis) return;
+  vis = next;
+  shell.classList.toggle("tucked", vis === "tucked");
+  shell.classList.toggle("gone", vis === "gone");
+  pushRect();
+  window.setTimeout(pushRect, 260);
+}
+
+function wake() {
+  lastActive = Date.now();
+  applyVis();
+}
+
+function setDocked(docked: boolean) {
+  shell.classList.toggle("floating", !docked);
+  requestAnimationFrame(pushRect);
+}
 
 function setMode(next: Mode) {
   if (next === mode) return;
@@ -358,6 +406,7 @@ function render() {
   const m = mood();
   bigFace.setMood(m);
   miniFace.setMood(m);
+  applyVis();
 }
 
 // ── alerts ──────────────────────────────────────────────────────────────────
@@ -383,7 +432,32 @@ function armAlertTimer() {
 
 // ── events ──────────────────────────────────────────────────────────────────
 
-$(".bar").addEventListener("click", (e) => {
+// Press and pull past a few pixels: Windows takes over and moves the window.
+const barEl = $(".bar");
+barEl.addEventListener("pointerdown", (e) => {
+  suppressClick = false;
+  press = e.button === 0 && !(e.target as HTMLElement).closest(".mic") ? { x: e.screenX, y: e.screenY } : null;
+});
+barEl.addEventListener("pointermove", (e) => {
+  if (!press) return;
+  if (!(e.buttons & 1)) {
+    press = null;
+    return;
+  }
+  if (Math.hypot(e.screenX - press.x, e.screenY - press.y) < 5) return;
+  press = null;
+  suppressClick = true;
+  dragging = true;
+  shell.classList.add("dragging");
+  void Bridge.beginDrag();
+});
+barEl.addEventListener("pointerup", () => (press = null));
+
+barEl.addEventListener("click", (e) => {
+  if (suppressClick) {
+    suppressClick = false;
+    return;
+  }
   const t = e.target as HTMLElement;
   if (t.closest(".mic")) {
     cue("wake");
@@ -460,9 +534,11 @@ shell.addEventListener("click", async (e) => {
 shell.addEventListener("mouseenter", () => {
   hovering = true;
   clearTimeout(leaveTimer);
+  wake();
 });
 shell.addEventListener("mouseleave", () => {
   hovering = false;
+  lastActive = Date.now();
   clearTimeout(leaveTimer);
   const input = $<HTMLInputElement>("#cmd-input");
   if (mode === "panel" && document.activeElement !== input) {
@@ -514,6 +590,7 @@ async function boot() {
   }
   applySettings(info.settings);
   state = info.state;
+  setDocked(info.docked);
   requestAnimationFrame(() => {
     bigFace.resize();
     miniFace.resize();
@@ -540,10 +617,28 @@ async function boot() {
   });
   void Bridge.onHeard(() => {
     thinkingUntil = Date.now() + 1500;
+    lastActive = Date.now();
     render();
   });
   void Bridge.onUi((cmd) => {
-    if (cmd === "expand") setMode("panel");
+    if (cmd === "toggle-hidden") {
+      hiddenByUser = !hiddenByUser;
+      if (hiddenByUser) {
+        setMode("bar");
+        lastActive = 0;
+      } else lastActive = Date.now();
+      cue(hiddenByUser ? "sleep" : "wake");
+      applyVis();
+    } else if (cmd === "show") {
+      hiddenByUser = false;
+      wake();
+    } else if (cmd === "drag-end") {
+      dragging = false;
+      shell.classList.remove("dragging");
+      wake();
+      pushRect();
+    } else if (cmd === "dock:top" || cmd === "dock:free") setDocked(cmd === "dock:top");
+    else if (cmd === "expand") setMode("panel");
     else if (cmd === "collapse") setMode("bar");
     else if (cmd.startsWith("world:")) {
       tab = "worlds";
@@ -578,7 +673,9 @@ async function boot() {
     playing = false;
     render();
   });
-  void Bridge.onCursor(({ x, y }) => {
+  void Bridge.onCursor(({ x, y, inside }) => {
+    // Touching the tucked line (or the faded bar) brings it back.
+    if (inside && vis === "tucked") wake();
     for (const [face, sel] of [[bigFace, ".face"], [miniFace, ".mini-face"]] as const) {
       const r = $(sel).getBoundingClientRect();
       face.lookAt(x - r.left, y - r.top);

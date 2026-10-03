@@ -55,7 +55,65 @@ button {
   border-top: none;
   border-radius: 0 0 14px 14px;
   overflow: hidden;
-  transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition:
+    width 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 240ms ease,
+    border-radius 160ms ease;
+}
+
+/* ── docked vs floating, tucked vs hidden ──────────────────────────────── */
+
+/* Dragged off the top edge: a free-standing pill with all four corners. */
+.shell.floating {
+  border-top: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.55);
+}
+
+/* Idle and docked: slide up until only a 3px line shows at the screen edge. */
+.shell.tucked {
+  transform: translate(-50%, calc(-100% + 3px));
+}
+.shell.tucked::after {
+  content: "";
+  position: absolute;
+  left: 34%;
+  right: 34%;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--green);
+  opacity: 0.85;
+}
+.shell.tucked.has-ask::after {
+  background: var(--amber);
+  left: 22%;
+  right: 22%;
+}
+
+/* Idle and floating: stay put, fade back. */
+.shell.floating.tucked {
+  transform: translateX(-50%);
+  opacity: 0.32;
+}
+.shell.floating.tucked::after {
+  display: none;
+}
+
+/* Hidden with the hotkey: gone until something needs you. */
+.shell.gone {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -110%);
+}
+.shell.floating.gone {
+  transform: translateX(-50%) scale(0.96);
+}
+
+.shell.dragging,
+.shell.dragging .bar {
+  cursor: grabbing;
 }
 
 .shell.mode-alert {

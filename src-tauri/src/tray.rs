@@ -1,4 +1,4 @@
-// Notification-area icon: open, talk, mute, pause, settings, quit.
+// Notification-area icon: open, talk, show/hide, move, mute, pause, settings, quit.
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -13,11 +13,18 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let brief = MenuItem::with_id(app, "brief", "Brief me", true, None::<&str>)?;
     let mute = CheckMenuItem::with_id(app, "mute", "Mute voice", true, false, None::<&str>)?;
     let pause = CheckMenuItem::with_id(app, "pause", "Pause", true, false, None::<&str>)?;
+    let hide = MenuItem::with_id(app, "hide", "Show / hide the bar", true, None::<&str>)?;
+    let next = MenuItem::with_id(app, "next-screen", "Move to next screen", true, None::<&str>)?;
+    let home = MenuItem::with_id(app, "home", "Back to top centre", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Dos Live", true, None::<&str>)?;
     let s1 = PredefinedMenuItem::separator(app)?;
     let s2 = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&open, &talk, &brief, &s1, &mute, &pause, &settings, &s2, &quit])?;
+    let s3 = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(
+        app,
+        &[&open, &talk, &brief, &s1, &hide, &next, &home, &s2, &mute, &pause, &settings, &s3, &quit],
+    )?;
 
     let mute_item = mute.clone();
     let pause_item = pause.clone();
@@ -31,7 +38,19 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                 "quit" => app.exit(0),
                 "settings" => crate::show_settings_window(app),
                 "open" => {
+                    let _ = app.emit_to(ISLAND, "ui", "show");
                     let _ = app.emit_to(ISLAND, "ui", "expand");
+                }
+                "hide" => {
+                    let _ = app.emit_to(ISLAND, "ui", "toggle-hidden");
+                }
+                "next-screen" => {
+                    let (app, gate) = (app.clone(), shared.gate.clone());
+                    std::thread::spawn(move || crate::island::next_screen(&app, &gate));
+                }
+                "home" => {
+                    let (app, gate) = (app.clone(), shared.gate.clone());
+                    std::thread::spawn(move || crate::island::home(&app, &gate));
                 }
                 "talk" => {
                     tauri::async_runtime::spawn(async move { brain.push_to_talk() });

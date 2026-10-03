@@ -145,13 +145,13 @@ const settings: Settings = {
   callGuard: true,
   callGuardIgnore: ["SpeechRuntime"],
   hermes: { enabled: true, url: "http://127.0.0.1:8642/v1", model: "hermes-agent" },
-  ui: { screen: "primary", sound: true, volume: 0.5, stealth: true, discreetWork: true, autostart: true, expandOnAlert: true, collapseAfterSecs: 14 },
+  ui: { screen: "primary", sound: true, volume: 0.5, stealth: true, discreetWork: true, autostart: true, expandOnAlert: true, collapseAfterSecs: 14, autoHide: true, hideAfterSecs: 8, hideHotkey: "Ctrl+Alt+H" },
 };
 
 export function mockInvoke(cmd: string, args?: Record<string, unknown>): unknown {
   switch (cmd) {
     case "boot": {
-      const b: BootInfo = { settings, state, keys: { trelloKey: view !== "setup", trelloToken: view !== "setup", hermesKey: true }, version: "0.1.0", windows: true };
+      const b: BootInfo = { settings, state, keys: { trelloKey: view !== "setup", trelloToken: view !== "setup", hermesKey: true }, version: "0.1.0", windows: true, docked: view !== "floating" };
       return b;
     }
     case "state":

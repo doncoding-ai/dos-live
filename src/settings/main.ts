@@ -116,6 +116,7 @@ function render() {
     ${check("ui.stealth", s.ui.stealth, "Hide from screen sharing and recordings", "You still see it. Teams, Meet, Zoom and OBS don't.")}
     ${check("ui.discreetWork", s.ui.discreetWork, "Keep the Work pill discreet", "Counts only, no ticket titles on screen.")}
     ${check("ui.expandOnAlert", s.ui.expandOnAlert, "Drop open when a ping or question arrives")}
+    ${check("ui.autoHide", s.ui.autoHide, "Tuck the bar away when idle", "Docked, it slides up to a thin line — touch the top edge to bring it back. Floating, it fades.")}
     ${check("ui.sound", s.ui.sound, "Sound cues")}
     ${check("ui.autostart", s.ui.autostart, "Start with Windows")}
     <div class="grid3">
@@ -126,6 +127,11 @@ function render() {
         `<select data-path="ui.screen"><option value="primary" ${s.ui.screen === "primary" ? "selected" : ""}>Main display</option><option value="cursor" ${s.ui.screen === "cursor" ? "selected" : ""}>Where the mouse is</option></select>`,
       )}
     </div>
+    <div class="grid3">
+      ${field("Tuck after", num("ui.hideAfterSecs", s.ui.hideAfterSecs, 3, 300), "seconds idle")}
+      ${field("Show / hide", text("ui.hideHotkey", s.ui.hideHotkey), "e.g. Ctrl+Alt+H")}
+    </div>
+    <p class="hint">Drag the bar by its middle to move it — onto another screen too. Dropped near a top edge it snaps back into a notch. Hidden with the hotkey, it still comes back for pings, questions and when you call Dos. Changing Screen above sends it back to the top centre.</p>
   </section>
 
   <section>

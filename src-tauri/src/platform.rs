@@ -62,6 +62,9 @@ mod imp {
     pub fn cursor_pos() -> Option<(i32, i32)> {
         None
     }
+    pub fn left_button_down() -> bool {
+        false
+    }
     pub fn window_origin(_hwnd: isize) -> Option<(i32, i32)> {
         None
     }

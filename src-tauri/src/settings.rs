@@ -91,6 +91,11 @@ pub struct UiSettings {
     /// Drop the panel open when a ping or ask arrives.
     pub expand_on_alert: bool,
     pub collapse_after_secs: f64,
+    /// Slide the idle bar up to a thin line (or fade it, when floating).
+    pub auto_hide: bool,
+    pub hide_after_secs: f64,
+    /// Global hotkey that hides the bar until something needs you.
+    pub hide_hotkey: String,
 }
 
 impl Default for UiSettings {
@@ -104,6 +109,9 @@ impl Default for UiSettings {
             autostart: true,
             expand_on_alert: true,
             collapse_after_secs: 14.0,
+            auto_hide: true,
+            hide_after_secs: 8.0,
+            hide_hotkey: "Ctrl+Alt+H".into(),
         }
     }
 }
@@ -169,6 +177,12 @@ pub fn local_dir() -> PathBuf {
 
 fn settings_path() -> PathBuf {
     config_dir().join("settings.json")
+}
+
+/// Where the bar was last dragged to. Kept apart from settings.json so the
+/// settings window, which holds its own copy of Settings, can never overwrite it.
+pub fn position_path() -> PathBuf {
+    config_dir().join("position.json")
 }
 
 pub fn state_path() -> PathBuf {

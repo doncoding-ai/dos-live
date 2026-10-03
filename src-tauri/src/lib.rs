@@ -17,7 +17,7 @@ use dos_core::Decision;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use brain::{Brain, ViewState, ISLAND};
 use island::Gate;
@@ -52,6 +52,8 @@ struct BootInfo {
     keys: Keys,
     version: String,
     windows: bool,
+    /// Bar sits in a notch at a screen's top edge (false: dragged somewhere).
+    docked: bool,
 }
 
 // Every command is async: Tauri runs sync commands on the main (UI) thread,
@@ -70,6 +72,7 @@ async fn boot(shared: State<'_, Shared>) -> R<BootInfo> {
         keys: keys(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         windows: cfg!(windows),
+        docked: island::docked(),
     })
 }
 
@@ -82,14 +85,16 @@ async fn save_settings(app: AppHandle, shared: State<'_, Shared>, settings: Sett
     if old.voice != settings.voice || old.worlds != settings.worlds {
         shared.brain.apply_voice_mode();
     }
-    if old.voice.hotkey != settings.voice.hotkey {
-        register_hotkey(&app, &settings.voice.hotkey);
+    if old.voice.hotkey != settings.voice.hotkey || old.ui.hide_hotkey != settings.ui.hide_hotkey {
+        register_hotkeys(&app, &settings);
     }
     if old.ui.autostart != settings.ui.autostart {
         let m = app.autolaunch();
         let _ = if settings.ui.autostart { m.enable() } else { m.disable() };
     }
     if old.ui.screen != settings.ui.screen {
+        // Picking a screen in Settings overrides wherever the bar was dragged.
+        island::forget_spot();
         island::place(&app, &settings.ui.screen);
     }
     if old.ui.stealth != settings.ui.stealth && !island::set_stealth(&app, settings.ui.stealth) && settings.ui.stealth {
@@ -111,6 +116,24 @@ async fn state(shared: State<'_, Shared>) -> R<ViewState> {
 #[tauri::command]
 async fn set_rect(shared: State<'_, Shared>, x: f64, y: f64, width: f64, height: f64) -> R<()> {
     *shared.gate.rect.lock().unwrap() = island::Rect { x, y, w: width, h: height };
+    Ok(())
+}
+
+/// The bar was grabbed: Windows moves the window until the button comes up.
+#[tauri::command]
+async fn begin_drag(app: AppHandle, shared: State<'_, Shared>) -> R<()> {
+    island::begin_drag(&app, shared.gate.clone());
+    Ok(())
+}
+
+/// "next" (top centre of the next screen) or "home" (back into the notch).
+#[tauri::command]
+async fn move_island(app: AppHandle, shared: State<'_, Shared>, to: String) -> R<()> {
+    match to.as_str() {
+        "next" => island::next_screen(&app, &shared.gate),
+        "home" => island::home(&app, &shared.gate),
+        _ => return Err("move_island: next or home".into()),
+    }
     Ok(())
 }
 
@@ -278,15 +301,27 @@ pub fn open_url(url: String) {
     }
 }
 
-fn register_hotkey(app: &AppHandle, hotkey: &str) {
+/// Push-to-talk and show/hide. The handler tells them apart by comparing the
+/// pressed shortcut with the show/hide one from the current settings.
+fn register_hotkeys(app: &AppHandle, settings: &Settings) {
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
-    if hotkey.trim().is_empty() {
-        return;
+    let talk = settings.voice.hotkey.trim();
+    let hide = settings.ui.hide_hotkey.trim();
+    for key in [talk, hide] {
+        if key.is_empty() || (key == hide && key.eq_ignore_ascii_case(talk)) {
+            continue;
+        }
+        if let Err(e) = gs.register(key) {
+            log::line(format!("hotkey {key}: {e}"));
+        }
     }
-    if let Err(e) = gs.register(hotkey.trim()) {
-        log::line(format!("hotkey {hotkey}: {e}"));
-    }
+}
+
+fn is_hide_hotkey(app: &AppHandle, pressed: &Shortcut) -> bool {
+    let Some(shared) = app.try_state::<Shared>() else { return false };
+    let hide = shared.brain.settings.lock().unwrap().ui.hide_hotkey.clone();
+    hide.trim().parse::<Shortcut>().map(|h| &h == pressed).unwrap_or(false)
 }
 
 fn settings_url(app: &AppHandle) -> WebviewUrl {
@@ -352,13 +387,18 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            let _ = app.emit_to(ISLAND, "ui", "show");
             let _ = app.emit_to(ISLAND, "ui", "expand");
         }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
+                .with_handler(|app, shortcut, event| {
                     if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    if is_hide_hotkey(app, shortcut) {
+                        let _ = app.emit_to(ISLAND, "ui", "toggle-hidden");
                         return;
                     }
                     // Runs on the UI thread: hand off, and never assume setup is done.
@@ -374,6 +414,8 @@ pub fn run() {
             save_settings,
             state,
             set_rect,
+            begin_drag,
+            move_island,
             set_keyboard,
             decide,
             refresh,
@@ -423,12 +465,13 @@ pub fn run() {
                 let _ = win.show();
             }
             island::spawn_cursor_poll(handle.clone(), gate.clone(), hwnd);
+            island::spawn_screen_watch(handle.clone(), gate.clone());
             step("island ready");
 
             if loaded.ui.autostart {
                 let _ = handle.autolaunch().enable();
             }
-            register_hotkey(&handle, &loaded.voice.hotkey);
+            register_hotkeys(&handle, &loaded);
             step("hotkey ready");
 
             tauri::async_runtime::spawn(brain.clone().run_poller());

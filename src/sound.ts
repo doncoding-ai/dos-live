@@ -48,6 +48,9 @@ export function cue(name: string) {
       case "wake":
         tone(520, 0, 0.16, "sine", 0.2, 880);
         break;
+      case "sleep":
+        tone(880, 0, 0.18, "sine", 0.14, 480);
+        break;
       case "miss":
         tone(620, 0, 0.18, "sine", 0.14, 380);
         break;

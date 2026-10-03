@@ -157,6 +157,9 @@ export interface Settings {
     autostart: boolean;
     expandOnAlert: boolean;
     collapseAfterSecs: number;
+    autoHide: boolean;
+    hideAfterSecs: number;
+    hideHotkey: string;
   };
 }
 
@@ -172,6 +175,7 @@ export interface BootInfo {
   keys: Keys;
   version: string;
   windows: boolean;
+  docked: boolean;
 }
 
 export interface Alert {
