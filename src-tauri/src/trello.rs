@@ -1,5 +1,7 @@
-// Trello over HTTPS. Credentials go in the Authorization header, never in a URL
-// (URLs end up in logs and error messages).
+// Trello over HTTPS. Credentials ride as the key/token query pair (Trello's
+// documented way; the OAuth-style header is refused for some tokens). A URL with
+// credentials in it must never be logged: every reqwest error is mapped to a fixed
+// string below, and request URLs are never formatted into messages.
 
 use std::time::Duration;
 
@@ -35,6 +37,11 @@ struct Creds {
 fn creds() -> Result<Creds, String> {
     let key = crate::secrets::get("trello-key").ok_or("Trello API key not set — open Settings")?;
     let token = crate::secrets::get("trello-token").ok_or("Trello token not set — open Settings")?;
+    // A pasted value often carries a stray space or newline.
+    let (key, token) = (key.trim().to_string(), token.trim().to_string());
+    if key.is_empty() || token.is_empty() {
+        return Err("Trello key/token is blank — open Settings".into());
+    }
     Ok(Creds { key, token })
 }
 
@@ -72,10 +79,7 @@ impl Trello {
 
     fn auth(&self, rb: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder, String> {
         let c = creds()?;
-        Ok(rb.header(
-            reqwest::header::AUTHORIZATION,
-            format!("OAuth oauth_consumer_key=\"{}\", oauth_token=\"{}\"", c.key, c.token),
-        ))
+        Ok(rb.query(&[("key", c.key.as_str()), ("token", c.token.as_str())]))
     }
 
     async fn send(&self, rb: reqwest::RequestBuilder) -> Result<String, String> {
