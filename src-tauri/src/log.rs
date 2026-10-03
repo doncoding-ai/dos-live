@@ -4,6 +4,9 @@
 use std::io::Write;
 
 pub fn line(message: impl AsRef<str>) {
+    // `npm run dev:app` has a terminal: show the log there too.
+    #[cfg(debug_assertions)]
+    eprintln!("[dos-live] {}", message.as_ref());
     let dir = crate::settings::local_dir();
     if std::fs::create_dir_all(&dir).is_err() {
         return;
