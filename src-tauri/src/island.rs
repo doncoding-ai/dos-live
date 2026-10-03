@@ -87,12 +87,12 @@ pub fn place(app: &AppHandle, pref: &str) {
 }
 
 #[cfg(windows)]
-fn raw_hwnd(win: &WebviewWindow) -> Option<isize> {
+pub fn raw_hwnd(win: &WebviewWindow) -> Option<isize> {
     win.hwnd().ok().map(|h| h.0 as isize).filter(|h| *h != 0)
 }
 
 #[cfg(not(windows))]
-fn raw_hwnd(_win: &WebviewWindow) -> Option<isize> {
+pub fn raw_hwnd(_win: &WebviewWindow) -> Option<isize> {
     None
 }
 
@@ -119,26 +119,33 @@ pub fn set_keyboard(app: &AppHandle, typing: bool) {
 
 /// ~30 Hz while the cursor is near the top of the screen, ~4 Hz otherwise.
 /// Decides click-through and feeds the front end the cursor for Dos's eyes.
-pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<Gate>) {
+///
+/// With `hwnd` (Windows), position and DPI are read straight from Win32, so the
+/// loop never waits on the UI thread; the only UI-thread call left is the
+/// click-through toggle, made only when the cursor crosses the island's edge.
+pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<Gate>, hwnd: Option<isize>) {
     std::thread::Builder::new()
         .name("dos-cursor".into())
         .spawn(move || {
             let mut last = (f64::MIN, f64::MIN);
+            let Some(win) = window(&app) else { return };
             loop {
                 if gate.stop.load(Ordering::Relaxed) {
                     return;
                 }
-                let Some(win) = window(&app) else {
-                    std::thread::sleep(Duration::from_millis(500));
-                    continue;
+                let (origin, scale) = match hwnd {
+                    Some(h) => (platform::window_origin(h), platform::dpi_scale(h)),
+                    None => (
+                        win.outer_position().ok().map(|p| (p.x, p.y)),
+                        win.scale_factor().unwrap_or(1.0),
+                    ),
                 };
-                let (Ok(origin), Some((cx, cy))) = (win.outer_position(), platform::cursor_pos()) else {
+                let (Some((ox, oy)), Some((cx, cy))) = (origin, platform::cursor_pos()) else {
                     std::thread::sleep(Duration::from_millis(250));
                     continue;
                 };
-                let scale = win.scale_factor().unwrap_or(1.0);
-                let x = (cx as f64 - origin.x as f64) / scale;
-                let y = (cy as f64 - origin.y as f64) / scale;
+                let x = (cx - ox) as f64 / scale;
+                let y = (cy - oy) as f64 / scale;
                 let near = y < WIN_H + 120.0 && x > -200.0 && x < WIN_W + 200.0;
                 std::thread::sleep(Duration::from_millis(if near { 33 } else { 250 }));
                 if (x - last.0).abs() < 1.0 && (y - last.1).abs() < 1.0 {
@@ -162,3 +169,4 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<Gate>) {
         })
         .expect("cursor thread");
 }
+

@@ -502,7 +502,16 @@ function applySettings(s: Settings) {
 }
 
 async function boot() {
-  const info = await Bridge.boot();
+  // The window can load before the app has finished starting; keep asking.
+  let info: Awaited<ReturnType<typeof Bridge.boot>> | null = null;
+  for (let attempt = 0; !info; attempt++) {
+    try {
+      info = await Bridge.boot();
+    } catch (err) {
+      if (attempt === 20) void Bridge.log(`boot still failing: ${String(err)}`).catch(() => {});
+      await new Promise((r) => setTimeout(r, Math.min(2000, 150 * (attempt + 1))));
+    }
+  }
   applySettings(info.settings);
   state = info.state;
   requestAnimationFrame(() => {

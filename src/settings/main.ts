@@ -236,7 +236,14 @@ root.addEventListener("click", async (e) => {
 });
 
 async function boot() {
-  const info = await Bridge.boot();
+  let info: Awaited<ReturnType<typeof Bridge.boot>> | null = null;
+  while (!info) {
+    try {
+      info = await Bridge.boot();
+    } catch {
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
   s = info.settings;
   keys = info.keys;
   render();

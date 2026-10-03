@@ -113,6 +113,9 @@ pub struct Brain {
     paused: AtomicBool,
     polling: AtomicBool,
     ask_seq: AtomicU64,
+    /// Cached "are Trello keys saved": reading the Credential Manager on every
+    /// state update was needless work on every emit.
+    trello_ready: AtomicBool,
 }
 
 fn now_eat() -> String {
@@ -164,6 +167,7 @@ impl Brain {
             paused: AtomicBool::new(false),
             polling: AtomicBool::new(false),
             ask_seq: AtomicU64::new(1),
+            trello_ready: AtomicBool::new(crate::trello::configured()),
         })
     }
 
@@ -199,7 +203,7 @@ impl Brain {
             asks,
             voice,
             problems: self.problems.lock().unwrap().clone(),
-            trello_ready: crate::trello::configured(),
+            trello_ready: self.trello_ready.load(Ordering::Relaxed),
             hermes_enabled: settings.hermes.enabled,
             focus: self.focus.lock().unwrap().clone(),
             paused: self.paused.load(Ordering::Relaxed),
@@ -247,6 +251,13 @@ impl Brain {
         self.poke.notify_one();
     }
 
+    /// A key was saved or removed in Settings.
+    pub fn keys_changed(&self) {
+        self.trello_ready.store(crate::trello::configured(), Ordering::Relaxed);
+        self.refresh();
+        self.emit_state();
+    }
+
     // ── polling ─────────────────────────────────────────────────────────────
 
     pub async fn run_poller(self: Arc<Self>) {
@@ -263,7 +274,9 @@ impl Brain {
     }
 
     async fn poll_once(&self) {
-        if !crate::trello::configured() {
+        let ready = crate::trello::configured();
+        self.trello_ready.store(ready, Ordering::Relaxed);
+        if !ready {
             *self.problems.lock().unwrap() = vec!["Add your Trello key and token in Settings to wake Dos up.".into()];
             self.emit_state();
             return;

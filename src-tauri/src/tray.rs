@@ -25,7 +25,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         .tooltip("Dos Live")
         .menu(&menu)
         .on_menu_event(move |app: &AppHandle, event| {
-            let shared = app.state::<Shared>();
+            let Some(shared) = app.try_state::<Shared>() else { return };
             let brain = shared.brain.clone();
             match event.id.as_ref() {
                 "quit" => app.exit(0),
@@ -33,12 +33,20 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                 "open" => {
                     let _ = app.emit_to(ISLAND, "ui", "expand");
                 }
-                "talk" => brain.push_to_talk(),
+                "talk" => {
+                    tauri::async_runtime::spawn(async move { brain.push_to_talk() });
+                }
                 "brief" => {
                     tauri::async_runtime::spawn(async move { brain.handle(dos_core::intent::Intent::Status).await });
                 }
-                "mute" => brain.set_muted(mute_item.is_checked().unwrap_or(false)),
-                "pause" => brain.set_paused(pause_item.is_checked().unwrap_or(false)),
+                "mute" => {
+                    let on = mute_item.is_checked().unwrap_or(false);
+                    tauri::async_runtime::spawn(async move { brain.set_muted(on) });
+                }
+                "pause" => {
+                    let on = pause_item.is_checked().unwrap_or(false);
+                    tauri::async_runtime::spawn(async move { brain.set_paused(on) });
+                }
                 _ => {}
             }
         });

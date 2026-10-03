@@ -62,6 +62,12 @@ mod imp {
     pub fn cursor_pos() -> Option<(i32, i32)> {
         None
     }
+    pub fn window_origin(_hwnd: isize) -> Option<(i32, i32)> {
+        None
+    }
+    pub fn dpi_scale(_hwnd: isize) -> f64 {
+        1.0
+    }
     pub fn mic_users() -> Vec<String> {
         vec![]
     }

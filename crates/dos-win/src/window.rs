@@ -1,10 +1,11 @@
 //! The island window's Win32 flags: never steal focus, stay out of Alt-Tab,
 //! and — the stealth part — never appear in a screen share or recording.
 
-use windows::Win32::Foundation::{HWND, POINT};
+use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetWindowLongPtrW, SetWindowDisplayAffinity, SetWindowLongPtrW, GWL_EXSTYLE, WDA_EXCLUDEFROMCAPTURE,
+    GetCursorPos, GetWindowLongPtrW, GetWindowRect, SetWindowDisplayAffinity, SetWindowLongPtrW, GWL_EXSTYLE, WDA_EXCLUDEFROMCAPTURE,
     WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
@@ -46,4 +47,22 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
 
 pub fn left_button_down() -> bool {
     unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0 }
+}
+
+/// Top-left of the window in physical pixels, read straight from Windows — no
+/// round trip through the UI thread, so polling it never stalls the app.
+pub fn window_origin(raw: isize) -> Option<(i32, i32)> {
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(hwnd(raw), &mut r).ok()? };
+    Some((r.left, r.top))
+}
+
+/// The window's DPI scale (1.0 at 96 DPI).
+pub fn dpi_scale(raw: isize) -> f64 {
+    let dpi = unsafe { GetDpiForWindow(hwnd(raw)) };
+    if dpi == 0 {
+        1.0
+    } else {
+        dpi as f64 / 96.0
+    }
 }

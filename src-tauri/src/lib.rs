@@ -54,19 +54,27 @@ struct BootInfo {
     windows: bool,
 }
 
+// Every command is async: Tauri runs sync commands on the main (UI) thread,
+// and anything there that waits — a lock, the Credential Manager, the pipe —
+// freezes the window ("Not responding"). Async commands run on the worker pool.
+// Commands borrowing State must return Result (a Tauri rule), hence `R<()>`.
+
+type R<T> = Result<T, String>;
+
 #[tauri::command]
-fn boot(shared: State<Shared>) -> BootInfo {
-    BootInfo {
-        settings: shared.brain.settings.lock().unwrap().clone(),
+async fn boot(shared: State<'_, Shared>) -> R<BootInfo> {
+    let settings = shared.brain.settings.lock().unwrap().clone();
+    Ok(BootInfo {
+        settings,
         state: shared.brain.view(),
         keys: keys(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         windows: cfg!(windows),
-    }
+    })
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) -> Result<(), String> {
+async fn save_settings(app: AppHandle, shared: State<'_, Shared>, settings: Settings) -> R<()> {
     let old = shared.brain.settings.lock().unwrap().clone();
     *shared.brain.settings.lock().unwrap() = settings.clone();
     settings::save(&settings).map_err(|e| e.to_string())?;
@@ -96,142 +104,155 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) -> R
 }
 
 #[tauri::command]
-fn state(shared: State<Shared>) -> ViewState {
-    shared.brain.view()
+async fn state(shared: State<'_, Shared>) -> R<ViewState> {
+    Ok(shared.brain.view())
 }
 
 #[tauri::command]
-fn set_rect(shared: State<Shared>, x: f64, y: f64, width: f64, height: f64) {
+async fn set_rect(shared: State<'_, Shared>, x: f64, y: f64, width: f64, height: f64) -> R<()> {
     *shared.gate.rect.lock().unwrap() = island::Rect { x, y, w: width, h: height };
+    Ok(())
 }
 
 #[tauri::command]
-fn set_keyboard(app: AppHandle, typing: bool) {
+async fn set_keyboard(app: AppHandle, typing: bool) {
     island::set_keyboard(&app, typing);
 }
 
 #[tauri::command]
-async fn decide(shared: State<'_, Shared>, ask_id: String, decision: String) -> Result<(), String> {
+async fn decide(shared: State<'_, Shared>, ask_id: String, decision: String) -> R<()> {
     let d = Decision::parse(&decision).ok_or("decision must be do_it, hold or skip")?;
     shared.brain.decide(&ask_id, d).await
 }
 
 #[tauri::command]
-fn refresh(shared: State<Shared>) {
-    shared.brain.refresh();
-}
-
-#[tauri::command]
-fn open_link(url: String) {
-    open_url(url);
-}
-
-#[tauri::command]
-fn push_to_talk(shared: State<Shared>) {
-    shared.brain.push_to_talk();
-}
-
-#[tauri::command]
-fn say(shared: State<Shared>, text: String) {
-    shared.brain.speak(&text);
-}
-
-#[tauri::command]
-fn run_intent(shared: State<Shared>, intent: Intent) {
-    let brain = shared.brain.clone();
-    tauri::async_runtime::spawn(async move { brain.handle(intent).await });
-}
-
-#[tauri::command]
-fn run_text(shared: State<Shared>, text: String) {
-    shared.brain.typed(text.chars().take(500).collect());
-}
-
-#[tauri::command]
-fn speech_done(shared: State<Shared>, id: u64) {
-    shared.brain.speech_finished(id);
-}
-
-#[tauri::command]
-fn stop_speaking(shared: State<Shared>) {
-    shared.brain.stop_speaking();
-}
-
-#[tauri::command]
-fn set_muted(shared: State<Shared>, muted: bool) {
-    shared.brain.set_muted(muted);
-}
-
-#[tauri::command]
-fn set_paused(shared: State<Shared>, paused: bool) {
-    shared.brain.set_paused(paused);
-}
-
-#[tauri::command]
-async fn create_note(shared: State<'_, Shared>, text: String) -> Result<(), String> {
-    shared.brain.create_note(&text).await
-}
-
-#[tauri::command]
-fn secret_present(key: String) -> bool {
-    secrets::present(&key)
-}
-
-#[tauri::command]
-fn secret_set(shared: State<Shared>, key: String, value: String) -> Result<(), String> {
-    secrets::set(&key, &value)?;
+async fn refresh(shared: State<'_, Shared>) -> R<()> {
     shared.brain.refresh();
     Ok(())
 }
 
 #[tauri::command]
-fn secret_clear(key: String) -> Result<(), String> {
-    secrets::clear(&key)
+async fn open_link(url: String) {
+    open_url(url);
 }
 
 #[tauri::command]
-fn key_status() -> Keys {
+async fn push_to_talk(shared: State<'_, Shared>) -> R<()> {
+    shared.brain.push_to_talk();
+    Ok(())
+}
+
+#[tauri::command]
+async fn say(shared: State<'_, Shared>, text: String) -> R<()> {
+    shared.brain.speak(&text);
+    Ok(())
+}
+
+#[tauri::command]
+async fn run_intent(shared: State<'_, Shared>, intent: Intent) -> R<()> {
+    let brain = shared.brain.clone();
+    tauri::async_runtime::spawn(async move { brain.handle(intent).await });
+    Ok(())
+}
+
+#[tauri::command]
+async fn run_text(shared: State<'_, Shared>, text: String) -> R<()> {
+    shared.brain.typed(text.chars().take(500).collect());
+    Ok(())
+}
+
+#[tauri::command]
+async fn speech_done(shared: State<'_, Shared>, id: u64) -> R<()> {
+    shared.brain.speech_finished(id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_speaking(shared: State<'_, Shared>) -> R<()> {
+    shared.brain.stop_speaking();
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_muted(shared: State<'_, Shared>, muted: bool) -> R<()> {
+    shared.brain.set_muted(muted);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_paused(shared: State<'_, Shared>, paused: bool) -> R<()> {
+    shared.brain.set_paused(paused);
+    Ok(())
+}
+
+#[tauri::command]
+async fn create_note(shared: State<'_, Shared>, text: String) -> R<()> {
+    shared.brain.create_note(&text).await
+}
+
+#[tauri::command]
+async fn secret_present(key: String) -> bool {
+    secrets::present(&key)
+}
+
+#[tauri::command]
+async fn secret_set(shared: State<'_, Shared>, key: String, value: String) -> R<()> {
+    secrets::set(&key, &value)?;
+    shared.brain.keys_changed();
+    Ok(())
+}
+
+#[tauri::command]
+async fn secret_clear(shared: State<'_, Shared>, key: String) -> R<()> {
+    secrets::clear(&key)?;
+    shared.brain.keys_changed();
+    Ok(())
+}
+
+#[tauri::command]
+async fn key_status() -> Keys {
     keys()
 }
 
 #[tauri::command]
-async fn test_trello(shared: State<'_, Shared>) -> Result<String, String> {
+async fn test_trello(shared: State<'_, Shared>) -> R<String> {
     shared.brain.test_trello().await
 }
 
 #[tauri::command]
-async fn setup_lists(shared: State<'_, Shared>) -> Result<String, String> {
+async fn setup_lists(shared: State<'_, Shared>) -> R<String> {
     shared.brain.setup_lists().await
 }
 
 #[tauri::command]
-async fn test_hermes(shared: State<'_, Shared>) -> Result<String, String> {
+async fn test_hermes(shared: State<'_, Shared>) -> R<String> {
     let s = shared.brain.settings.lock().unwrap().hermes.clone();
     hermes::ask(&s.url, &s.model, &[], "Reply with exactly: Dos Live connected.").await
 }
 
 #[tauri::command]
-fn test_relay() -> Result<String, String> {
+async fn test_relay() -> R<String> {
     platform::relay_self_test().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn list_voices(shared: State<Shared>) {
+async fn list_voices(shared: State<'_, Shared>) -> R<()> {
     shared.brain.list_voices();
+    Ok(())
 }
 
 #[tauri::command]
-fn open_settings(app: AppHandle) {
+async fn open_settings(app: AppHandle) {
     show_settings_window(&app);
 }
 
 #[tauri::command]
-fn quit_app(app: AppHandle) {
+async fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
 #[tauri::command]
-fn log_line(message: String) {
+async fn log_line(message: String) {
     log::line(format!("ui  {}", message.chars().take(300).collect::<String>()));
 }
 
@@ -316,6 +337,16 @@ pub fn show_settings_window(app: &AppHandle) {
 }
 
 pub fn run() {
+    // No console in release builds and panics abort, so a crash would vanish
+    // without a trace. Write it to the log first.
+    std::panic::set_hook(Box::new(|info| {
+        log::line(format!("PANIC: {info}"));
+    }));
+    log::line(format!("--- Dos Live {} starting ---", env!("CARGO_PKG_VERSION")));
+
+    // `Dos Live.exe --safe` (or DOSLIVE_SAFE=1): no voice, no call guard, no
+    // relay — just the island and Trello. For telling which part misbehaves.
+    let safe = std::env::args().any(|a| a == "--safe") || std::env::var_os("DOSLIVE_SAFE").is_some();
     let loaded = settings::load();
     let gate = Gate::new();
 
@@ -327,8 +358,13 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
-                        app.state::<Shared>().brain.push_to_talk();
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    // Runs on the UI thread: hand off, and never assume setup is done.
+                    if let Some(shared) = app.try_state::<Shared>() {
+                        let brain = shared.brain.clone();
+                        tauri::async_runtime::spawn(async move { brain.push_to_talk() });
                     }
                 })
                 .build(),
@@ -365,38 +401,60 @@ pub fn run() {
             log_line,
         ])
         .setup(move |app| {
+            let step = |s: &str| log::line(format!("setup: {s}"));
             let handle = app.handle().clone();
             let brain = Brain::new(handle.clone(), loaded.clone());
             app.manage(Shared { brain: brain.clone(), gate: gate.clone() });
+            step("state ready");
 
             tray::build(&handle)?;
+            step("tray ready");
             create_settings_window(&handle);
+            step("settings window ready");
 
+            let mut hwnd = None;
             if let Some(win) = island::window(&handle) {
                 island::place(&handle, &loaded.ui.screen);
                 if !island::prepare(&win, loaded.ui.stealth) && loaded.ui.stealth {
                     log::line("stealth unavailable on this Windows build");
                 }
+                hwnd = island::raw_hwnd(&win);
                 let _ = win.set_ignore_cursor_events(true);
                 let _ = win.show();
             }
-            island::spawn_cursor_poll(handle.clone(), gate.clone());
+            island::spawn_cursor_poll(handle.clone(), gate.clone(), hwnd);
+            step("island ready");
 
             if loaded.ui.autostart {
                 let _ = handle.autolaunch().enable();
             }
             register_hotkey(&handle, &loaded.voice.hotkey);
+            step("hotkey ready");
 
-            log::line(format!("--- Dos Live {} started ---", env!("CARGO_PKG_VERSION")));
-            brain.start_voice();
-            brain.clone().run_call_guard();
+            tauri::async_runtime::spawn(brain.clone().run_poller());
 
-            let relay_brain = brain.clone();
-            if let Err(e) = platform::serve_relay(move |line| relay_brain.relay(line)) {
-                log::line(format!("relay pipe unavailable: {e}"));
+            if safe {
+                log::line("safe mode: voice, call guard and relay are off");
+            } else {
+                // Let the window come up and settle before the microphone and
+                // the speech engine start; neither belongs on the startup path.
+                let late = brain.clone();
+                std::thread::Builder::new()
+                    .name("dos-late-start".into())
+                    .spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                        late.start_voice();
+                        log::line("setup: voice started");
+                        late.clone().run_call_guard();
+                        let relay_brain = late.clone();
+                        match platform::serve_relay(move |line| relay_brain.relay(line)) {
+                            Ok(()) => log::line("setup: relay ready"),
+                            Err(e) => log::line(format!("relay pipe unavailable: {e}")),
+                        }
+                    })
+                    .expect("late start thread");
             }
-
-            tauri::async_runtime::spawn(brain.run_poller());
+            log::line(format!("--- Dos Live {} started ---", env!("CARGO_PKG_VERSION")));
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -26,6 +26,14 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
     dos_win::window::cursor_pos()
 }
 
+pub fn window_origin(hwnd: isize) -> Option<(i32, i32)> {
+    dos_win::window::window_origin(hwnd)
+}
+
+pub fn dpi_scale(hwnd: isize) -> f64 {
+    dos_win::window::dpi_scale(hwnd)
+}
+
 /// Apps other than Dos Live holding the microphone right now.
 pub fn mic_users() -> Vec<String> {
     dos_win::callguard::mic_users()

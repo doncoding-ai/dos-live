@@ -190,6 +190,8 @@ where
                 Err(e) => e.code() == ERROR_PIPE_CONNECTED.to_hresult(),
             };
             if !ok {
+                // Never spin: a failing connect must not become a busy loop.
+                std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
             let h = handle.clone();

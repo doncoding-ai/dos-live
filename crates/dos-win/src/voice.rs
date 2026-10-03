@@ -14,9 +14,9 @@
 //!
 //! All WinRT objects live on one dedicated MTA thread, driven by commands.
 
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::core::{Ref, HSTRING};
 use windows::Foundation::{TimeSpan, TypedEventHandler};
@@ -70,8 +70,9 @@ enum Cmd {
     Dictate,
     Speak { id: u64, text: String, voice: String, rate: f64 },
     ListVoices,
-    /// Internal: the continuous session ended on its own; start it again.
-    Restart,
+    /// Internal: session `gen` ended with `status`. Stale generations (sessions
+    /// we stopped ourselves) are ignored — acting on them caused a restart storm.
+    Ended { gen: u64, status: SpeechRecognitionResultStatus },
 }
 
 /// Cheap to clone; every method just posts to the voice thread.
@@ -121,9 +122,14 @@ impl Voice {
 struct Listener {
     recognizer: SpeechRecognizer,
     session: SpeechContinuousRecognitionSession,
-    phrases: Vec<String>,
+    gen: u64,
+    started: Instant,
     paused: bool,
 }
+
+/// Restarts after an unexpected end, with backoff; gives up after this many
+/// quick failures in a row so a blocked microphone can't spin the CPU.
+const MAX_QUICK_FAILURES: u32 = 5;
 
 fn span(d: Duration) -> TimeSpan {
     TimeSpan { Duration: (d.as_nanos() / 100) as i64 }
@@ -143,42 +149,62 @@ fn run(rx: Receiver<Cmd>, self_tx: Sender<Cmd>, events: Arc<dyn Fn(VoiceEvent) +
     }
     let mut listener: Option<Listener> = None;
     let mut synth: Option<SpeechSynthesizer> = None;
+    // What we should be listening for, if anything, and the retry schedule.
+    let mut wanted: Option<Vec<String>> = None;
+    let mut gen: u64 = 0;
+    let mut failures: u32 = 0;
+    let mut retry_at: Option<Instant> = None;
 
-    while let Ok(cmd) = rx.recv() {
+    loop {
+        let cmd = match rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(c) => c,
+            Err(RecvTimeoutError::Timeout) => {
+                if let (Some(at), Some(phrases)) = (retry_at, wanted.as_ref()) {
+                    if Instant::now() >= at && listener.is_none() {
+                        retry_at = None;
+                        gen += 1;
+                        try_start(phrases, gen, &mut listener, &mut failures, &mut retry_at, &events, &self_tx);
+                    }
+                }
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         match cmd {
             Cmd::Listen(phrases) => {
                 stop(&mut listener);
-                match start_listener(&phrases, &events, &self_tx) {
-                    Ok(l) => {
-                        listener = Some(l);
-                        events(VoiceEvent::Listening(true));
-                    }
-                    Err(e) => {
-                        events(VoiceEvent::Listening(false));
-                        events(VoiceEvent::Problem(friendly(&e)));
-                    }
-                }
+                failures = 0;
+                retry_at = None;
+                gen += 1;
+                try_start(&phrases, gen, &mut listener, &mut failures, &mut retry_at, &events, &self_tx);
+                wanted = Some(phrases);
             }
-            Cmd::Restart => {
-                // The session ended by itself (device change, long silence, error).
-                if let Some(l) = listener.take() {
-                    if l.paused {
-                        listener = Some(l);
-                        continue;
-                    }
-                    let phrases = l.phrases.clone();
-                    drop(l);
-                    std::thread::sleep(Duration::from_millis(600));
-                    match start_listener(&phrases, &events, &self_tx) {
-                        Ok(l) => listener = Some(l),
-                        Err(e) => {
-                            events(VoiceEvent::Listening(false));
-                            events(VoiceEvent::Problem(friendly(&e)));
-                        }
-                    }
+            Cmd::Ended { gen: ended, status } => {
+                // Only the live session counts; anything else is one we stopped.
+                if listener.as_ref().map(|l| l.gen) != Some(ended) {
+                    continue;
+                }
+                let uptime = listener.as_ref().map(|l| l.started.elapsed()).unwrap_or_default();
+                stop(&mut listener);
+                if uptime > Duration::from_secs(60) {
+                    failures = 0;
+                }
+                failures += 1;
+                if failures >= MAX_QUICK_FAILURES {
+                    retry_at = None;
+                    events(VoiceEvent::Listening(false));
+                    events(VoiceEvent::Problem(format!(
+                        "Listening stopped ({status:?}). Is the microphone blocked? Settings → Privacy & security → Microphone → let desktop apps use it, then reopen Dos Live. Push-to-talk still works."
+                    )));
+                } else {
+                    let wait = Duration::from_secs(1u64 << failures.min(5));
+                    retry_at = Some(Instant::now() + wait);
+                    events(VoiceEvent::Listening(false));
                 }
             }
             Cmd::StopListening => {
+                wanted = None;
+                retry_at = None;
                 stop(&mut listener);
                 events(VoiceEvent::Listening(false));
             }
@@ -245,6 +271,33 @@ fn run(rx: Receiver<Cmd>, self_tx: Sender<Cmd>, events: Arc<dyn Fn(VoiceEvent) +
     }
 }
 
+/// One attempt to bring the command listener up; on failure, schedules a retry
+/// with backoff or gives up after MAX_QUICK_FAILURES.
+fn try_start(
+    phrases: &[String],
+    gen: u64,
+    listener: &mut Option<Listener>,
+    failures: &mut u32,
+    retry_at: &mut Option<Instant>,
+    events: &Arc<dyn Fn(VoiceEvent) + Send + Sync>,
+    self_tx: &Sender<Cmd>,
+) {
+    match start_listener(phrases, gen, events, self_tx) {
+        Ok(l) => {
+            *listener = Some(l);
+            events(VoiceEvent::Listening(true));
+        }
+        Err(e) => {
+            *failures += 1;
+            events(VoiceEvent::Listening(false));
+            events(VoiceEvent::Problem(friendly(&e)));
+            if *failures < MAX_QUICK_FAILURES {
+                *retry_at = Some(Instant::now() + Duration::from_secs(1u64 << (*failures).min(5)));
+            }
+        }
+    }
+}
+
 fn stop(listener: &mut Option<Listener>) {
     if let Some(l) = listener.take() {
         if let Ok(op) = l.session.StopAsync() {
@@ -256,6 +309,7 @@ fn stop(listener: &mut Option<Listener>) {
 
 fn start_listener(
     phrases: &[String],
+    gen: u64,
     events: &Arc<dyn Fn(VoiceEvent) + Send + Sync>,
     self_tx: &Sender<Cmd>,
 ) -> windows::core::Result<Listener> {
@@ -298,16 +352,20 @@ fn start_listener(
         },
     ))?;
 
-    let restart = self_tx.clone();
+    let ended = self_tx.clone();
     session.Completed(&TypedEventHandler::new(
-        move |_: Ref<SpeechContinuousRecognitionSession>, _: Ref<SpeechContinuousRecognitionCompletedEventArgs>| {
-            let _ = restart.send(Cmd::Restart);
+        move |_: Ref<SpeechContinuousRecognitionSession>, args: Ref<SpeechContinuousRecognitionCompletedEventArgs>| {
+            let status = args
+                .as_ref()
+                .and_then(|a| a.Status().ok())
+                .unwrap_or(SpeechRecognitionResultStatus::Unknown);
+            let _ = ended.send(Cmd::Ended { gen, status });
             Ok(())
         },
     ))?;
 
     session.StartAsync()?.get()?;
-    Ok(Listener { recognizer, session, phrases: phrases.to_vec(), paused: false })
+    Ok(Listener { recognizer, session, gen, started: Instant::now(), paused: false })
 }
 
 /// One free sentence. `Ok(None)` when nothing usable was said.
