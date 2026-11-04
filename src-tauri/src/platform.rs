@@ -62,6 +62,9 @@ mod imp {
     pub fn cursor_pos() -> Option<(i32, i32)> {
         None
     }
+    pub fn idle_ms() -> u64 {
+        0
+    }
     pub fn left_button_down() -> bool {
         false
     }

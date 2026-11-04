@@ -1,5 +1,14 @@
 // Mirrors the Rust types that cross the bridge (serde camelCase).
 
+export type Skin = "liquid" | "terminal" | "presence" | "bubble";
+
+export interface CursorInfo {
+  x: number;
+  y: number;
+  inside: boolean;
+  idleMs: number;
+}
+
 export type WorldStateName = "alert" | "attention" | "active" | "quiet" | "empty";
 export type Stage = "todo" | "doing" | "hold" | "done" | "other";
 
@@ -160,6 +169,9 @@ export interface Settings {
     autoHide: boolean;
     hideAfterSecs: number;
     hideHotkey: string;
+    skin: Skin | string;
+    theme: "dark" | "light" | "system" | string;
+    roam: "idle" | "always" | "never" | string;
   };
 }
 

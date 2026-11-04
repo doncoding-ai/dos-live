@@ -3,7 +3,8 @@
 
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+use windows::Win32::System::SystemInformation::GetTickCount;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetLastInputInfo, LASTINPUTINFO, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetWindowLongPtrW, GetWindowRect, SetWindowDisplayAffinity, SetWindowLongPtrW, GWL_EXSTYLE, WDA_EXCLUDEFROMCAPTURE,
     WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
@@ -43,6 +44,17 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
     let mut p = POINT::default();
     unsafe { GetCursorPos(&mut p).ok()? };
     Some((p.x, p.y))
+}
+
+/// Milliseconds since the last keyboard or mouse input, system-wide.
+pub fn idle_ms() -> u64 {
+    let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    unsafe {
+        if !GetLastInputInfo(&mut info).as_bool() {
+            return 0;
+        }
+        GetTickCount().wrapping_sub(info.dwTime) as u64
+    }
 }
 
 pub fn left_button_down() -> bool {

@@ -12,6 +12,25 @@
   color-scheme: dark;
 }
 
+:root.theme-light {
+  --bg: #f6f8fa;
+  --panel: #ffffff;
+  --line: #d9e0e7;
+  --line-hi: #b9c6d2;
+  --ink: #0e1620;
+  --dim: #5b6a78;
+  --green: #0f7a45;
+  --blue: #1d64c4;
+  --amber: #9a5800;
+  --red: #c4372a;
+  color-scheme: light;
+}
+
+html,
+body {
+  transition: background-color 450ms ease, color 450ms ease;
+}
+
 html,
 body {
   margin: 0;
@@ -242,4 +261,8 @@ code {
   .grid3 {
     grid-template-columns: 1fr;
   }
+}
+
+:root.theme-light .btn.go {
+  color: #ffffff;
 }

@@ -26,6 +26,10 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
     dos_win::window::cursor_pos()
 }
 
+pub fn idle_ms() -> u64 {
+    dos_win::window::idle_ms()
+}
+
 pub fn left_button_down() -> bool {
     dos_win::window::left_button_down()
 }

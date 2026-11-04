@@ -30,6 +30,10 @@ function num(path: string, value: number, min: number, max: number, step = 1) {
   return `<input type="number" data-path="${path}" value="${value}" min="${min}" max="${max}" step="${step}"/>`;
 }
 
+function select(path: string, value: string, options: [string, string][]) {
+  return `<select data-path="${path}">${options.map(([v, l]) => `<option value="${v}" ${v === value ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+}
+
 function check(path: string, value: boolean, label: string, hint = "") {
   return `<label class="check"><input type="checkbox" data-path="${path}" ${value ? "checked" : ""}/><span>${label}${hint ? `<small>${hint}</small>` : ""}</span></label>`;
 }
@@ -109,6 +113,16 @@ function render() {
     <p class="hint">Hermes talks back with <code>dosctl say …</code> and <code>dosctl ask …</code> — see the README.</p>
     <div class="row"><button type="button" class="btn" data-run="testRelay">Test the relay</button></div>
     <p class="result" data-result="relay"></p>
+  </section>
+
+  <section>
+    <h2>Look</h2>
+    <div class="grid3">
+      ${field("Style", select("ui.skin", s.ui.skin, [["liquid", "Liquid notch"], ["terminal", "Terminal"], ["presence", "Presence orb"], ["bubble", "Bubble"]]))}
+      ${field("Theme", select("ui.theme", s.ui.theme, [["dark", "Dark"], ["light", "Light"], ["system", "Match Windows"]]))}
+      ${field("Bubble roams", select("ui.roam", s.ui.roam, [["idle", "When I'm away"], ["always", "Always"], ["never", "Never — it rests"]]))}
+    </div>
+    <p class="hint">Liquid: one shape that morphs. Terminal: the <code>dos:~$</code> bar. Presence: Dos as an orb, cards grow out of it. Bubble: the orb bounces around your screen and docks into the notch when something needs you — away from the keyboard for 30 seconds by default, home the moment you're back, and you can throw it.</p>
   </section>
 
   <section>
@@ -241,6 +255,14 @@ root.addEventListener("click", async (e) => {
   }
 });
 
+const lightQuery = window.matchMedia("(prefers-color-scheme: light)");
+
+/** Settings follows the island's theme. */
+function applyTheme() {
+  const t = s?.ui.theme;
+  document.documentElement.classList.toggle("theme-light", t === "light" || (t === "system" && lightQuery.matches));
+}
+
 async function boot() {
   let info: Awaited<ReturnType<typeof Bridge.boot>> | null = null;
   while (!info) {
@@ -252,10 +274,13 @@ async function boot() {
   }
   s = info.settings;
   keys = info.keys;
+  applyTheme();
   render();
   void Bridge.onSettings((next) => {
     s = next;
+    applyTheme();
   });
+  lightQuery.addEventListener("change", applyTheme);
   void Bridge.onVoices((voices) => {
     const sel = root.querySelector<HTMLSelectElement>('[data-path="voice.voiceName"]');
     if (!sel) return;

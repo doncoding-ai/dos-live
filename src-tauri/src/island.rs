@@ -1,24 +1,27 @@
-// The island window: a transparent, always-on-top, never-focused strip, docked
-// to the top edge of a screen like a notch or dragged anywhere, on any screen. It only takes the mouse over the shape the front end
-// says is visible (the bar or the open panel); everywhere else clicks fall
-// through to whatever is underneath.
+// The island window: a transparent, always-on-top, never-focused window. In
+// the compact styles (liquid, terminal, presence) it is a strip docked to the
+// top edge of a screen like a notch, or dragged anywhere, on any screen. In the
+// bubble style it covers the whole screen so Dos can roam it. Either way it only
+// takes the mouse over the shapes the front end says are visible (the bar, the
+// open panel, the orb); everywhere else clicks fall through to what's beneath.
 //
 // Placement, click-through and the cursor poll follow Coucou's Windows build
-// (MIT, © Louis Raillé), trimmed to one window size.
+// (MIT, © Louis Raillé).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewWindow};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 use crate::brain::ISLAND;
+use crate::settings::UiSettings;
 use crate::{platform, settings};
 
-/// Logical size of the island window — the open panel plus room for shadows.
-pub const WIN_W: f64 = 760.0;
-pub const WIN_H: f64 = 380.0;
+/// Logical size of the compact window — the open panel plus room for shadows.
+pub const WIN_W: f64 = 780.0;
+pub const WIN_H: f64 = 480.0;
 /// Extra margin that still counts as "on the island" so a click is never lost.
 const HIT_MARGIN: f64 = 10.0;
 
@@ -30,22 +33,47 @@ pub struct Rect {
     pub h: f64,
 }
 
+impl Rect {
+    fn hit(&self, x: f64, y: f64) -> bool {
+        self.w > 0.0
+            && x >= self.x - HIT_MARGIN
+            && x <= self.x + self.w + HIT_MARGIN
+            && y >= self.y - HIT_MARGIN
+            && y <= self.y + self.h + HIT_MARGIN
+    }
+}
+
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Cursor {
     pub x: f64,
     pub y: f64,
     pub inside: bool,
+    /// Milliseconds since the last keyboard or mouse input anywhere.
+    pub idle_ms: u64,
 }
 
 pub struct Gate {
-    pub rect: Mutex<Rect>,
+    /// The parts of the window that take the mouse, in logical pixels.
+    pub rects: Mutex<Vec<Rect>>,
     ignoring: AtomicBool,
     pub stop: AtomicBool,
+    /// Bubble style: the window covers the whole work area.
+    pub full: AtomicBool,
 }
 
 impl Gate {
     pub fn new() -> Arc<Gate> {
-        Arc::new(Gate { rect: Mutex::new(Rect::default()), ignoring: AtomicBool::new(false), stop: AtomicBool::new(false) })
+        Arc::new(Gate {
+            rects: Mutex::new(Vec::new()),
+            ignoring: AtomicBool::new(false),
+            stop: AtomicBool::new(false),
+            full: AtomicBool::new(false),
+        })
+    }
+
+    fn first(&self) -> Rect {
+        self.rects.lock().unwrap().first().copied().unwrap_or_default()
     }
 }
 
@@ -124,8 +152,8 @@ fn area(m: &Monitor) -> (i32, i32, f64, f64) {
     (wa.position.x, wa.position.y, wa.size.width as f64, wa.size.height as f64)
 }
 
-/// Puts the window at a spot on `m`, kept fully on that screen so the panel
-/// always has room to open. Returns the spot as actually used.
+/// Compact styles: puts the window at a spot on `m`, kept fully on that screen
+/// so the panel always has room to open. Returns the spot as actually used.
 fn put(win: &WebviewWindow, m: &Monitor, x: f64, y: f64, docked: bool) -> Spot {
     let scale = m.scale_factor();
     let (ax, ay, aw, ah) = area(m);
@@ -139,29 +167,49 @@ fn put(win: &WebviewWindow, m: &Monitor, x: f64, y: f64, docked: bool) -> Spot {
     Spot { monitor: name_of(m), x, y, docked }
 }
 
+/// Bubble style: the window becomes the whole work area of `m`.
+fn cover(win: &WebviewWindow, m: &Monitor) -> Spot {
+    let (ax, ay, aw, ah) = area(m);
+    let _ = win.set_position(PhysicalPosition::new(ax, ay));
+    let _ = win.set_size(PhysicalSize::new(aw as u32, ah as u32));
+    let _ = win.set_always_on_top(true);
+    Spot { monitor: name_of(m), x: 0.0, y: 0.0, docked: true }
+}
+
 fn top_centre(win: &WebviewWindow, m: &Monitor) -> Spot {
     let (_, _, aw, _) = area(m);
     put(win, m, (aw / m.scale_factor() - WIN_W) / 2.0, 0.0, true)
+}
+
+fn seat(gate: &Gate, win: &WebviewWindow, m: &Monitor) -> Spot {
+    if gate.full.load(Ordering::SeqCst) {
+        cover(win, m)
+    } else {
+        top_centre(win, m)
+    }
 }
 
 fn tell_dock(app: &AppHandle, docked: bool) {
     let _ = app.emit_to(ISLAND, "ui", if docked { "dock:top" } else { "dock:free" });
 }
 
-/// Startup and "Screen" changes: the last dragged spot if its screen is still
-/// plugged in, otherwise top centre of the screen the setting names.
-pub fn place(app: &AppHandle, pref: &str) {
+/// Startup, and "Screen" or style changes: the last spot if its screen is
+/// still plugged in, otherwise top centre of the screen the setting names.
+/// The bubble style always takes the whole of that screen.
+pub fn place(app: &AppHandle, gate: &Gate, ui: &UiSettings) {
+    gate.full.store(ui.skin == "bubble", Ordering::SeqCst);
     let Some(win) = window(app) else { return };
+    let full = gate.full.load(Ordering::SeqCst);
     if let Some(spot) = load_spot() {
         let monitors = app.available_monitors().unwrap_or_default();
         if let Some(m) = monitors.iter().find(|m| name_of(m) == spot.monitor) {
-            let used = put(&win, m, spot.x, spot.y, spot.docked);
+            let used = if full { cover(&win, m) } else { put(&win, m, spot.x, spot.y, spot.docked) };
             tell_dock(app, used.docked);
             return;
         }
     }
-    if let Some(m) = target_monitor(app, pref) {
-        top_centre(&win, &m);
+    if let Some(m) = target_monitor(app, &ui.screen) {
+        seat(gate, &win, &m);
         tell_dock(app, true);
     }
 }
@@ -170,8 +218,8 @@ pub fn place(app: &AppHandle, pref: &str) {
 fn monitor_under_bar(app: &AppHandle, win: &WebviewWindow, gate: &Gate) -> Option<Monitor> {
     let pos = win.outer_position().ok()?;
     let scale = win.scale_factor().unwrap_or(1.0);
-    let r = *gate.rect.lock().unwrap();
-    let cx = if r.w > 0.0 { r.x + r.w / 2.0 } else { WIN_W / 2.0 };
+    let r = gate.first();
+    let cx = if r.w > 0.0 { r.x + r.w / 2.0 } else { 20.0 };
     let px = pos.x as f64 + cx * scale;
     let py = pos.y as f64 + (r.y + 15.0) * scale;
     let monitors = app.available_monitors().ok()?;
@@ -184,7 +232,11 @@ fn monitor_under_bar(app: &AppHandle, win: &WebviewWindow, gate: &Gate) -> Optio
 
 /// Hands the mouse to Windows' own window-move loop (so the bar follows the
 /// cursor across screens, DPI changes included), then settles it on release.
+/// The bubble style never moves its window: Dos itself is thrown instead.
 pub fn begin_drag(app: &AppHandle, gate: Arc<Gate>) {
+    if gate.full.load(Ordering::SeqCst) {
+        return;
+    }
     let Some(win) = window(app) else { return };
     if DRAGGING.swap(true, Ordering::SeqCst) {
         return;
@@ -196,7 +248,7 @@ pub fn begin_drag(app: &AppHandle, gate: Arc<Gate>) {
     let app = app.clone();
     let _ = std::thread::Builder::new().name("dos-drag".into()).spawn(move || {
         std::thread::sleep(Duration::from_millis(80));
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         while platform::left_button_down() && started.elapsed() < Duration::from_secs(120) {
             std::thread::sleep(Duration::from_millis(30));
         }
@@ -215,7 +267,7 @@ fn settle(app: &AppHandle, win: &WebviewWindow, gate: &Gate) {
     let (ax, ay, aw, _) = area(&m);
     let mut x = (pos.x - ax) as f64 / scale;
     let y = (pos.y - ay) as f64 / scale;
-    let bar_top = y + gate.rect.lock().unwrap().y;
+    let bar_top = y + gate.first().y;
     let docked = bar_top < SNAP_TOP;
     let centre = (aw / scale - WIN_W) / 2.0;
     if docked && (x - centre).abs() < SNAP_CENTRE {
@@ -227,7 +279,7 @@ fn settle(app: &AppHandle, win: &WebviewWindow, gate: &Gate) {
     crate::log::line(format!("island: {} on {}", if spot.docked { "docked" } else { "floating" }, spot.monitor));
 }
 
-/// Tray: hop to the top centre of the next screen (left to right, wrapping).
+/// Tray: hop to the next screen (left to right, wrapping).
 pub fn next_screen(app: &AppHandle, gate: &Gate) {
     let Some(win) = window(app) else { return };
     let mut monitors = app.available_monitors().unwrap_or_default();
@@ -237,7 +289,7 @@ pub fn next_screen(app: &AppHandle, gate: &Gate) {
     monitors.sort_by_key(|m| (m.position().x, m.position().y));
     let here = monitor_under_bar(app, &win, gate).map(|m| name_of(&m)).unwrap_or_default();
     let i = monitors.iter().position(|m| name_of(m) == here).map(|i| (i + 1) % monitors.len()).unwrap_or(0);
-    let spot = top_centre(&win, &monitors[i]);
+    let spot = seat(gate, &win, &monitors[i]);
     save_spot(&spot);
     tell_dock(app, true);
 }
@@ -246,7 +298,7 @@ pub fn next_screen(app: &AppHandle, gate: &Gate) {
 pub fn home(app: &AppHandle, gate: &Gate) {
     let Some(win) = window(app) else { return };
     let Some(m) = monitor_under_bar(app, &win, gate) else { return };
-    let spot = top_centre(&win, &m);
+    let spot = seat(gate, &win, &m);
     save_spot(&spot);
     tell_dock(app, true);
 }
@@ -265,14 +317,11 @@ pub fn spawn_screen_watch(app: AppHandle, gate: Arc<Gate>) {
         let Some(win) = window(&app) else { continue };
         let (Ok(pos), Ok(monitors)) = (win.outer_position(), app.available_monitors()) else { continue };
         let scale = win.scale_factor().unwrap_or(1.0);
-        let (px, py) = (pos.x as f64 + WIN_W / 2.0 * scale, pos.y as f64 + 10.0 * scale);
+        let (px, py) = (pos.x as f64 + 40.0 * scale, pos.y as f64 + 10.0 * scale);
         if !monitors.iter().any(|m| monitor_contains(m, px, py)) {
-            let pref = app
-                .try_state::<crate::Shared>()
-                .map(|s| s.brain.settings.lock().unwrap().ui.screen.clone())
-                .unwrap_or_else(|| "primary".into());
+            let Some(ui) = app.try_state::<crate::Shared>().map(|s| s.brain.settings.lock().unwrap().ui.clone()) else { continue };
             crate::log::line("island: its screen went away — moving it back");
-            place(&app, &pref);
+            place(&app, &gate, &ui);
         }
     });
 }
@@ -308,17 +357,20 @@ pub fn set_keyboard(app: &AppHandle, typing: bool) {
     }
 }
 
-/// ~30 Hz while the cursor is near the top of the screen, ~4 Hz otherwise.
-/// Decides click-through and feeds the front end the cursor for Dos's eyes.
+/// ~30 Hz while the cursor is near the island (always, in the bubble style),
+/// ~4 Hz otherwise. Decides click-through every tick — the shapes move even
+/// when the mouse doesn't — and feeds the front end the cursor for Dos's eyes,
+/// plus how long you've been away from the keyboard and mouse.
 ///
 /// With `hwnd` (Windows), position and DPI are read straight from Win32, so the
 /// loop never waits on the UI thread; the only UI-thread call left is the
-/// click-through toggle, made only when the cursor crosses the island's edge.
+/// click-through toggle, made only when the cursor crosses a shape's edge.
 pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<Gate>, hwnd: Option<isize>) {
     std::thread::Builder::new()
         .name("dos-cursor".into())
         .spawn(move || {
             let mut last = (f64::MIN, f64::MIN);
+            let mut last_emit = Instant::now();
             let Some(win) = window(&app) else { return };
             loop {
                 if gate.stop.load(Ordering::Relaxed) {
@@ -337,27 +389,24 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<Gate>, hwnd: Option<isize>) {
                 };
                 let x = (cx - ox) as f64 / scale;
                 let y = (cy - oy) as f64 / scale;
-                let near = y < WIN_H + 120.0 && x > -200.0 && x < WIN_W + 200.0;
+                let full = gate.full.load(Ordering::Relaxed);
+                let near = full || (y < WIN_H + 120.0 && x > -200.0 && x < WIN_W + 200.0);
                 std::thread::sleep(Duration::from_millis(if near { 33 } else { 250 }));
-                if (x - last.0).abs() < 1.0 && (y - last.1).abs() < 1.0 {
-                    continue;
-                }
-                last = (x, y);
-                let r = *gate.rect.lock().unwrap();
-                let inside = r.w > 0.0
-                    && x >= r.x - HIT_MARGIN
-                    && x <= r.x + r.w + HIT_MARGIN
-                    && y >= r.y - HIT_MARGIN
-                    && y <= r.y + r.h + HIT_MARGIN;
+                let inside = gate.rects.lock().unwrap().iter().any(|r| r.hit(x, y));
                 if gate.ignoring.load(Ordering::Relaxed) == inside {
                     gate.ignoring.store(!inside, Ordering::Relaxed);
                     let _ = win.set_ignore_cursor_events(!inside);
                 }
-                if near {
-                    let _ = app.emit_to(ISLAND, "cursor", Cursor { x, y, inside });
+                let moved = (x - last.0).abs() >= 1.0 || (y - last.1).abs() >= 1.0;
+                // The bubble needs a heartbeat even when the mouse is still:
+                // that stillness is how it knows you've stepped away.
+                let beat = full && last_emit.elapsed() >= Duration::from_secs(1);
+                if near && (moved || beat) {
+                    last = (x, y);
+                    last_emit = Instant::now();
+                    let _ = app.emit_to(ISLAND, "cursor", Cursor { x, y, inside, idle_ms: platform::idle_ms() });
                 }
             }
         })
         .expect("cursor thread");
 }
-

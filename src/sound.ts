@@ -1,5 +1,6 @@
-// Dos's cues, synthesized — no sound files. Short, low, and quiet: a sonar
-// ping for news, a double knock for a question, a rising blip when it listens.
+// Dos's cues, synthesized — no sound files. Short, low, soft and round (sine
+// and triangle only, nothing buzzy): a sonar ping for news, a double knock for
+// a question, a rising blip when it listens, a falling one when it sleeps.
 
 let ctx: AudioContext | null = null;
 let enabled = true;
@@ -59,10 +60,11 @@ export function cue(name: string) {
         tone(990, 0.07, 0.24, "sine", 0.1);
         break;
       case "think":
-        tone(1400, 0, 0.05, "square", 0.03);
+        tone(1180, 0, 0.07, "sine", 0.05);
         break;
       case "error":
-        tone(220, 0, 0.25, "sawtooth", 0.06, 180);
+        tone(330, 0, 0.18, "triangle", 0.12, 240);
+        tone(260, 0.12, 0.22, "triangle", 0.1, 200);
         break;
     }
   } catch {

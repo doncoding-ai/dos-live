@@ -1,91 +1,87 @@
-// The island: a terminal bar hugging the top edge of a screen (or dragged
-// anywhere) that drops open into Dos's panel (feed, worlds, questions) or a
-// single alert card. Idle, it tucks away; the hotkey hides it outright.
+// The island. One controller, four looks (see skins.ts): it works out which
+// scene Dos is in — idle, a ping, a question, the panel, listening, speaking —
+// morphs the shell to that scene's shape, moves Dos's face to its seat, and
+// lets the bubble roam. Light or dark is a class on <html>; the look is chosen
+// in Settings and swapped by reloading this page.
 
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/600.css";
 import "@fontsource/jetbrains-mono/800.css";
+import "@fontsource/geist-sans/400.css";
+import "@fontsource/geist-sans/500.css";
+import "@fontsource/geist-sans/600.css";
+import "@fontsource/geist-mono/400.css";
+import "@fontsource/geist-mono/500.css";
+import "@fontsource/manrope/500.css";
+import "@fontsource/manrope/600.css";
+import "@fontsource/manrope/700.css";
+import "@fontsource/manrope/800.css";
+import "@fontsource/ibm-plex-sans/400.css";
+import "@fontsource/ibm-plex-sans/500.css";
+import "@fontsource/ibm-plex-sans/600.css";
 import "./island.css";
 
 import { Bridge, inTauri } from "./bridge";
+import { Bubble, TAIL } from "./bubble";
 import { DosFace, type Mood } from "./dos";
+import { type Box, type Scene, type SkinDef, type Slot, skinOf } from "./skins";
 import { configureSound, cue } from "./sound";
 import { enqueue, setVoiceVolume, stopAll } from "./speech";
-import type { Alert, Ask, FeedItem, Settings, ViewState, WorldStatus } from "./types";
+import type { Alert, Ask, CursorInfo, FeedItem, Settings, Skin, ViewState, WorldStatus } from "./types";
 
 type Mode = "bar" | "panel" | "alert";
-/** shown · tucked (idle: slid up to a line, or faded when floating) · gone (hidden with the hotkey). */
-type Vis = "shown" | "tucked" | "gone";
 type Tab = "feed" | "worlds" | "asks";
+/** shown · tucked (idle: slid up to a line, faded, or peeking) · gone (hidden with the hotkey). */
+type Vis = "shown" | "tucked" | "gone";
 
 const $ = <T extends HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
+const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
 let settings: Settings;
 let state: ViewState;
+let def: SkinDef;
 let mode: Mode = "bar";
+let scene: Scene = "idle";
 let tab: Tab = "feed";
 let alert: Alert | null = null;
+let answered: string | null = null;
 let alertTimer = 0;
 let leaveTimer = 0;
 let hovering = false;
-let speakingText = "";
 let playing = false;
+let speakingText = "";
 let thinkingUntil = 0;
 let happyUntil = 0;
 let openWorld: string | null = null;
-let tickerTarget = "";
-let tickerShown = "";
-let tickerTimer = 0;
 let vis: Vis = "shown";
 let hiddenByUser = false;
 let lastActive = Date.now();
 let dragging = false;
 let suppressClick = false;
 let press: { x: number; y: number } | null = null;
+let docked = true;
+let idleMs = 0;
+let cursor: { x: number; y: number } | null = null;
+let lastBox: Box = { w: 0, h: 0, r: 0, top: 0, hidden: true };
+let speech = { words: [] as string[], start: 0, ms: 0, lit: -1 };
+
+let stage: HTMLElement;
+let shell: HTMLElement;
+let dos: HTMLElement | null = null;
+let dosBtn: HTMLElement | null = null;
+let eyes: HTMLElement | null = null;
+let miniFace: DosFace | null = null;
+let bigFace: DosFace | null = null;
+
+let bubble: Bubble | null = null;
+let seat: Slot | null = null;
+let raf = 0;
+let frame = 0;
+let throwing = false;
+let roamKickUntil = 0;
+let wasRoaming = false;
 
 const root = $("#root");
-root.innerHTML = `
-<div id="shell" class="shell mode-bar" role="region" aria-label="Dos Live">
-  <header class="bar" title="Click to open · drag to move">
-    <canvas class="mini-face" aria-hidden="true"></canvas>
-    <span class="prompt"><b>dos</b><span class="dim">:~$</span></span>
-    <span class="ticker" aria-live="polite"><span class="ticker-text"></span><span class="caret"></span></span>
-    <span class="dots" role="list"></span>
-    <button class="mic" type="button" aria-label="Talk to Dos"></button>
-  </header>
-  <section class="body">
-    <div class="face-col">
-      <canvas class="face" aria-hidden="true"></canvas>
-      <p class="face-caption"></p>
-      <div class="face-acts">
-        <button type="button" class="act" data-act="brief">brief me</button>
-        <button type="button" class="act" data-act="talk">talk</button>
-      </div>
-    </div>
-    <div class="main-col">
-      <nav class="tabs" role="tablist">
-        <button type="button" role="tab" data-tab="feed">feed</button>
-        <button type="button" role="tab" data-tab="worlds">worlds</button>
-        <button type="button" role="tab" data-tab="asks">asks<span class="count"></span></button>
-        <span class="spacer"></span>
-        <button type="button" class="icon" data-act="refresh" aria-label="Refresh boards" title="Refresh boards">↻</button>
-        <button type="button" class="icon" data-act="settings" aria-label="Settings" title="Settings">⚙</button>
-        <button type="button" class="icon" data-act="close" aria-label="Close" title="Close (Esc)">✕</button>
-      </nav>
-      <div class="view" role="tabpanel"></div>
-      <form class="cmd">
-        <label for="cmd-input" class="dim">$</label>
-        <input id="cmd-input" autocomplete="off" spellcheck="false" placeholder="try: status, note buy cement, how is the farm" />
-      </form>
-    </div>
-    <div class="alert-col"></div>
-  </section>
-  <footer class="status"></footer>
-</div>`;
-
-const shell = $("#shell");
-const bigFace = new DosFace($<HTMLCanvasElement>(".face"));
-const miniFace = new DosFace($<HTMLCanvasElement>(".mini-face"), true);
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -115,29 +111,331 @@ function worldById(id: string | null): WorldStatus | undefined {
   return id ? state.snapshot?.worlds.find((w) => w.id === id) : undefined;
 }
 
-// ── geometry: tell Rust which part of the window takes the mouse ────────────
-
-function pushRect() {
-  // Gone: no part of the window takes the mouse.
-  if (vis === "gone") return void Bridge.setRect(0, 0, 0, 0);
-  const r = shell.getBoundingClientRect();
-  void Bridge.setRect(r.left, r.top, r.width, r.height);
+function greeting() {
+  const h = new Date().getHours();
+  return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
 }
-new ResizeObserver(pushRect).observe(shell);
-// Tucking slides with a transform, which ResizeObserver doesn't see.
-shell.addEventListener("transitionend", pushRect);
+
+/** Sets text only when it changed, with a soft swap so it never just snaps. */
+function swapText(el: HTMLElement | null, text: string) {
+  if (!el || el.dataset.t === text) return;
+  el.dataset.t = text;
+  el.textContent = text;
+  el.title = text;
+  el.classList.remove("swap-in");
+  void el.offsetWidth;
+  el.classList.add("swap-in");
+}
+
+/** Sets innerHTML only when it changed — re-rendering would replay entrance animations. */
+function setHtml(el: HTMLElement | null, html: string) {
+  if (!el || el.dataset.h === html) return false;
+  el.dataset.h = html;
+  el.innerHTML = html;
+  return true;
+}
+
+const ICON = {
+  brief: `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 7h14M5 12h10M5 17h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`,
+  mic: `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>`,
+  refresh: `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M19 12a7 7 0 1 1-2.05-4.95M19 4v4h-4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  gear: `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M12 2.8v2.4M12 18.8v2.4M4.2 7.5l2.1 1.2M17.7 15.3l2.1 1.2M4.2 16.5l2.1-1.2M17.7 8.7l2.1-1.2" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>`,
+  close: `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`,
+  check: `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+};
+
+// ── markup ──────────────────────────────────────────────────────────────────
+
+function idleMarkup(s: Skin) {
+  if (s === "liquid") {
+    return `<button type="button" class="idle-hit drag-zone" data-act="open" aria-label="Open Dos">
+      <span class="face-gap"></span><span class="idle-text"></span><span class="mini-dots" aria-hidden="true"></span>
+    </button>`;
+  }
+  if (s === "terminal") {
+    return `<div class="tbar drag-zone">
+      <button type="button" class="helm-btn" data-act="open" aria-label="Open Dos"><canvas class="mini-face" aria-hidden="true"></canvas></button>
+      <span class="prompt"><b>dos</b><span class="dim">:~$</span></span>
+      <button type="button" class="ticker" data-act="open" aria-live="polite">
+        <span class="tick-col"><span class="tick-line t-cur"><span class="tt"></span><i class="caret"></i></span><span class="tick-line t-next"><span class="tt"></span><i class="caret"></i></span></span>
+      </button>
+      <span class="swap"><span class="dots" role="list"></span><span class="meter" aria-hidden="true">${"<i></i>".repeat(12)}</span></span>
+      <button type="button" class="mic" aria-label="Talk to Dos"></button>
+    </div>`;
+  }
+  return "";
+}
+
+function listenMarkup(s: Skin) {
+  if (s === "terminal") return "";
+  const wave = s === "liquid" ? `<span class="wave" aria-hidden="true">${"<i></i>".repeat(14)}</span>` : "";
+  const hint = s === "presence" ? `<span class="li-hint">try “how is the farm” or “note: buy cement”</span>` : "";
+  return `<div class="li"><span class="face-gap"></span>${wave}<span class="li-text">Listening…</span>${hint}</div>`;
+}
+
+function panelMarkup(s: Skin) {
+  const placeholder = s === "terminal" ? "try: status, note buy cement, how is the farm" : "Ask Dos — “how is the farm”, “note: buy cement”";
+  return `<div class="p-wrap">
+    <aside class="p-side">
+      <canvas class="face" aria-hidden="true"></canvas>
+      <p class="face-caption"></p>
+      <div class="face-acts"><button type="button" class="pill" data-act="brief">brief me</button><button type="button" class="pill" data-act="talk">talk</button></div>
+    </aside>
+    <div class="p-main">
+      <header class="p-head drag-zone">
+        <span class="face-gap"></span>
+        <div class="p-title"><span class="p-greet"></span><span class="p-sum"></span></div>
+        <nav class="tabs" role="tablist" aria-label="Dos">
+          <span class="tabpill" aria-hidden="true"></span>
+          <button type="button" role="tab" data-tab="feed">feed</button>
+          <button type="button" role="tab" data-tab="worlds">worlds</button>
+          <button type="button" role="tab" data-tab="asks">asks<span class="count"></span></button>
+        </nav>
+        <span class="spacer"></span>
+        <button type="button" class="icon side-dup" data-act="brief" aria-label="Brief me" title="Brief me">${ICON.brief}</button>
+        <button type="button" class="icon side-dup" data-act="talk" aria-label="Talk to Dos" title="Talk">${ICON.mic}</button>
+        <button type="button" class="icon" data-act="refresh" aria-label="Refresh boards" title="Refresh boards">${ICON.refresh}</button>
+        <button type="button" class="icon" data-act="settings" aria-label="Settings" title="Settings">${ICON.gear}</button>
+        <button type="button" class="icon" data-act="close" aria-label="Close" title="Close (Esc)">${ICON.close}</button>
+      </header>
+      <div class="view" role="tabpanel"></div>
+      <form class="cmd">
+        <label for="cmd-input" class="cmd-label">$<span class="sr"> Ask Dos</span></label>
+        <input id="cmd-input" autocomplete="off" spellcheck="false" placeholder="${esc(placeholder)}" />
+      </form>
+      <footer class="status"></footer>
+    </div>
+  </div>`;
+}
+
+function dosMarkup(s: Skin) {
+  const tail = s === "bubble" ? `<div class="tail" aria-hidden="true">${"<i></i>".repeat(TAIL)}</div>` : "";
+  const halo = s === "presence" ? `<svg class="halo" viewBox="0 0 100 100" aria-hidden="true"></svg>` : "";
+  return `${tail}<div id="dos" class="dos">
+    <span class="ripples" aria-hidden="true"><i></i><i></i><i></i></span>
+    ${halo}
+    <button type="button" class="dos-btn" data-act="open" aria-label="Open Dos"><span class="dos-body"><span class="eyes"><i></i><i></i></span></span></button>
+  </div>`;
+}
+
+function build() {
+  const s = def.id;
+  root.innerHTML = `<div id="stage" class="stage skin-${s} scene-idle vis-shown">
+    <div id="shell" class="shell" role="region" aria-label="Dos Live">
+      <div class="layer l-idle">${idleMarkup(s)}</div>
+      <div class="layer l-alert" aria-live="polite"></div>
+      <div class="layer l-panel">${panelMarkup(s)}</div>
+      <div class="layer l-listen">${listenMarkup(s)}</div>
+      <div class="layer l-speak"><div class="sp"><span class="face-gap"></span><span class="sp-kick">dos ›</span><p class="words" aria-live="polite"></p></div></div>
+    </div>
+    ${def.face === "inline" ? "" : dosMarkup(s)}
+  </div>`;
+  stage = $("#stage");
+  shell = $("#shell");
+  dos = document.getElementById("dos");
+  dosBtn = dos ? $(".dos-btn", dos) : null;
+  eyes = dos ? $(".eyes", dos) : null;
+  if (s === "terminal") {
+    miniFace = new DosFace($<HTMLCanvasElement>(".mini-face"), true);
+    bigFace = new DosFace($<HTMLCanvasElement>(".p-side .face"));
+  }
+  if (s === "bubble") bubble = new Bubble(window.innerWidth / 2, 26, 30);
+}
+
+// ── scenes and geometry ─────────────────────────────────────────────────────
+
+const LAYER: Record<Scene, string> = { idle: "l-idle", ping: "l-alert", ask: "l-alert", panel: "l-panel", listen: "l-listen", speak: "l-speak" };
+
+function sceneNow(): Scene {
+  if (mode === "panel") return "panel";
+  if (mode === "alert") return alert?.kind === "ask" ? "ask" : "ping";
+  if (state.voice.dictating) return "listen";
+  if (playing) return "speak";
+  return "idle";
+}
+
+/** Morph the shell to the current scene and send Dos to its seat. */
+function layout() {
+  const next = sceneNow();
+  if (next !== scene) {
+    scene = next;
+    stage.classList.remove("scene-idle", "scene-ping", "scene-ask", "scene-panel", "scene-listen", "scene-speak");
+    stage.classList.add(`scene-${scene}`);
+  }
+  const active = $(`.${LAYER[scene]}`, shell);
+  shell.querySelectorAll<HTMLElement>(".layer").forEach((el) => el.classList.toggle("on", el === active));
+  const offset = def.id === "terminal" && scene !== "idle" && scene !== "listen" ? 32 : 0;
+  const probe = def.box(scene, 0);
+  active.style.width = `${probe.w}px`;
+  if (scene === "panel") active.style.height = `${probe.h - offset}px`;
+  const b = def.box(scene, scene === "panel" ? 0 : active.scrollHeight);
+  lastBox = b;
+  shell.style.width = `${b.w}px`;
+  shell.style.height = `${b.h}px`;
+  shell.style.top = `${b.top}px`;
+  shell.style.borderRadius = def.id === "terminal" && docked ? `0 0 ${b.r}px ${b.r}px` : `${b.r}px`;
+  shell.classList.toggle("hidden", b.hidden);
+  placeDos();
+  pushRectsSoon();
+}
+
+function roaming(): boolean {
+  if (def.id !== "bubble" || scene !== "idle" || vis === "gone" || reduceMotion) return false;
+  if (state.voice.onCall || state.paused || hiddenByUser) return false;
+  if (Date.now() < roamKickUntil) return true;
+  if (settings.ui.roam === "always") return true;
+  if (settings.ui.roam === "never") return false;
+  return idleMs > 30_000;
+}
+
+function slotNow(): Slot | null {
+  const W = window.innerWidth;
+  const L = (W - lastBox.w) / 2;
+  let s = def.slot(scene, lastBox, L, W);
+  if (def.id === "bubble" && scene === "idle") {
+    if (roaming()) return null;
+    s = { cx: W / 2, cy: vis === "tucked" ? 6 : 26, s: 30 };
+  }
+  if (s && vis === "tucked" && scene === "idle" && def.id === "liquid") s = { ...s, cy: s.cy - (lastBox.h + lastBox.top - 3) };
+  return s;
+}
+
+function placeDos() {
+  if (!dos) return;
+  const s = slotNow();
+  if (bubble) {
+    const roam = s === null;
+    if (roam && !wasRoaming) bubble.kick();
+    wasRoaming = roam;
+    seat = s;
+    wakeBubble();
+    return;
+  }
+  if (!s) return;
+  dos.style.width = `${s.s}px`;
+  dos.style.height = `${s.s}px`;
+  dos.style.transform = `translate(${s.cx - s.s / 2}px, ${s.cy - s.s / 2}px)`;
+}
+
+// ── the bubble ──────────────────────────────────────────────────────────────
+
+function wakeBubble() {
+  if (!raf && bubble) raf = requestAnimationFrame(bubbleLoop);
+}
+
+function drawBubble() {
+  if (!bubble || !dos) return;
+  const b = bubble;
+  dos.style.width = `${b.size}px`;
+  dos.style.height = `${b.size}px`;
+  dos.style.transform = `translate(${b.x - b.size / 2}px, ${b.y - b.size / 2}px)`;
+  const [sx, sy] = b.squash();
+  $(".dos-body", dos).style.transform = `scale(${sx.toFixed(3)}, ${sy.toFixed(3)})`;
+  if (!seat && eyes) {
+    eyes.style.transform = `translate(${Math.max(-3, Math.min(3, b.vx * 0.5)).toFixed(1)}px, ${Math.max(-3, Math.min(3, b.vy * 0.35)).toFixed(1)}px)`;
+  }
+  const bits = b.tail();
+  stage.querySelectorAll<HTMLElement>(".tail i").forEach((el, i) => {
+    const t = bits[i];
+    el.style.width = `${t.s.toFixed(1)}px`;
+    el.style.height = `${t.s.toFixed(1)}px`;
+    el.style.opacity = t.o.toFixed(3);
+    el.style.transform = `translate(${t.x.toFixed(1)}px, ${t.y.toFixed(1)}px)`;
+  });
+}
+
+function bubbleLoop() {
+  raf = 0;
+  if (!bubble) return;
+  bubble.step(seat, window.innerWidth, window.innerHeight, cursor);
+  drawBubble();
+  if (++frame % 2 === 0) pushRects();
+  if (seat === null || bubble.moving || bubble.held) raf = requestAnimationFrame(bubbleLoop);
+  else pushRects();
+}
+
+function startThrow(e: PointerEvent) {
+  if (!bubble || !dosBtn) return;
+  const btn = dosBtn;
+  btn.setPointerCapture(e.pointerId);
+  const start = { x: e.clientX, y: e.clientY };
+  let moved = false;
+  const move = (ev: PointerEvent) => {
+    if (!moved && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 5) return;
+    if (!moved) {
+      moved = true;
+      throwing = true;
+      stage.classList.add("dragging");
+      pushRects();
+    }
+    bubble!.hold(ev.clientX, ev.clientY);
+    drawBubble();
+  };
+  const up = () => {
+    btn.removeEventListener("pointermove", move);
+    btn.removeEventListener("pointerup", up);
+    btn.removeEventListener("pointercancel", up);
+    if (!moved) return;
+    suppressClick = true;
+    throwing = false;
+    stage.classList.remove("dragging");
+    bubble!.release();
+    roamKickUntil = Date.now() + 6000;
+    wasRoaming = true;
+    if (mode !== "bar") setMode("bar");
+    else placeDos();
+    wakeBubble();
+    pushRects();
+  };
+  btn.addEventListener("pointermove", move);
+  btn.addEventListener("pointerup", up);
+  btn.addEventListener("pointercancel", up);
+}
+
+// ── click-through: tell Rust which shapes take the mouse ────────────────────
+
+let rectKey = "";
+let rectTimer = 0;
+
+function pushRects() {
+  let out: number[][] = [];
+  if (throwing) out = [[0, 0, window.innerWidth, window.innerHeight]];
+  else if (vis !== "gone") {
+    if (!lastBox.hidden) {
+      const r = shell.getBoundingClientRect();
+      if (r.width > 1 && r.height > 1) out.push([r.left, r.top, r.width, r.height]);
+    }
+    if (dosBtn) {
+      const r = dosBtn.getBoundingClientRect();
+      if (r.width > 1) out.push([r.left, r.top, r.width, r.height]);
+    }
+  }
+  const key = out.map((r) => r.map((n) => Math.round(n)).join(",")).join(";");
+  if (key === rectKey) return;
+  rectKey = key;
+  void Bridge.setRects(out);
+}
+
+/** After a morph: now, mid-way and once it has settled. */
+function pushRectsSoon() {
+  pushRects();
+  clearTimeout(rectTimer);
+  window.setTimeout(pushRects, 260);
+  rectTimer = window.setTimeout(pushRects, 720);
+}
 
 // ── tuck & hide ─────────────────────────────────────────────────────────────
 
 function wantVis(): Vis {
   const now = Date.now();
-  if (dragging || hovering) return "shown";
+  if (dragging || hovering || throwing) return "shown";
   const busy = mode !== "bar" || playing || state.voice.dictating || now < thinkingUntil;
   if (busy) {
     lastActive = now;
     return "shown";
   }
   if (hiddenByUser) return "gone";
+  if (def.id === "bubble" && roaming()) return "shown";
   if (settings.ui.autoHide && now - lastActive > settings.ui.hideAfterSecs * 1000) return "tucked";
   return "shown";
 }
@@ -146,10 +444,10 @@ function applyVis() {
   const next = wantVis();
   if (next === vis) return;
   vis = next;
-  shell.classList.toggle("tucked", vis === "tucked");
-  shell.classList.toggle("gone", vis === "gone");
-  pushRect();
-  window.setTimeout(pushRect, 260);
+  stage.classList.remove("vis-shown", "vis-tucked", "vis-gone");
+  stage.classList.add(`vis-${vis}`);
+  placeDos();
+  pushRectsSoon();
 }
 
 function wake() {
@@ -157,31 +455,29 @@ function wake() {
   applyVis();
 }
 
-function setDocked(docked: boolean) {
-  shell.classList.toggle("floating", !docked);
-  requestAnimationFrame(pushRect);
+function setDocked(d: boolean) {
+  docked = d;
+  stage.classList.toggle("floating", !d);
+  layout();
 }
 
 function setMode(next: Mode) {
   if (next === mode) return;
   mode = next;
-  shell.classList.remove("mode-bar", "mode-panel", "mode-alert");
-  shell.classList.add(`mode-${next}`);
   if (next !== "alert") {
     alert = null;
+    answered = null;
     clearTimeout(alertTimer);
   }
-  if (next === "bar") {
-    ($<HTMLInputElement>("#cmd-input")).blur();
-  }
-  requestAnimationFrame(() => {
-    bigFace.resize();
-    pushRect();
-  });
+  if (next === "bar") $<HTMLInputElement>("#cmd-input").blur();
   render();
+  requestAnimationFrame(() => {
+    bigFace?.resize();
+    positionTabPill();
+  });
 }
 
-// ── rendering ───────────────────────────────────────────────────────────────
+// ── moods ───────────────────────────────────────────────────────────────────
 
 function mood(): Mood {
   const v = state.voice;
@@ -199,6 +495,14 @@ function mood(): Mood {
   return "idle";
 }
 
+function tone(): string {
+  const v = state.voice;
+  if (playing || v.dictating) return "blue";
+  if (v.onCall || !state.trelloReady || state.paused) return "quiet";
+  if (scene === "ask" || state.asks.length) return "amber";
+  return "green";
+}
+
 function caption(): string {
   const v = state.voice;
   if (v.onCall) return `on a call${v.micUsers.length ? ` (${v.micUsers.join(", ")})` : ""} — quiet`;
@@ -213,59 +517,120 @@ function caption(): string {
   return "standing by";
 }
 
+function summary(): string {
+  if (!state.trelloReady) return "connect Trello in Settings";
+  if (state.voice.onCall) return "on a call — quiet";
+  if (state.asks.length) return state.asks.length === 1 ? "1 question waiting" : `${state.asks.length} questions waiting`;
+  const need = (state.snapshot?.worlds ?? []).filter((w) => w.state === "alert" || w.state === "attention").length;
+  if (need) return `${need} thing${need > 1 ? "s" : ""} need${need > 1 ? "" : "s"} you`;
+  return "all quiet";
+}
+
 function tickerLine(): string {
   const v = state.voice;
   if (v.dictating) return v.noteMode ? "listening for your note…" : "listening…";
   if (playing && speakingText) return speakingText;
   if (v.onCall) return "on a call — Dos is quiet";
   if (state.problems.length) return state.problems[0];
-  if (state.asks.length) return `question waiting: ${state.asks[0].question}`;
+  if (state.asks.length) return `question waiting — ${state.asks[0].question}`;
   const latest = state.feed.find((f) => f.kind === "ping" || f.kind === "say");
   if (latest) return `${latest.title.toLowerCase()} — ${firstSentence(latest.body)}`;
   return state.trelloReady ? "all quiet" : "open settings to connect Trello";
 }
 
-function typeTicker(text: string) {
-  if (text === tickerTarget) return;
-  tickerTarget = text;
-  clearInterval(tickerTimer);
-  const el = $(".ticker-text");
-  el.title = text;
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    tickerShown = text;
-    el.textContent = text;
+// ── the terminal's rolling ticker ───────────────────────────────────────────
+
+let tickTarget = "";
+let tickBusy = false;
+
+function rollTicker(text: string) {
+  if (def.id !== "terminal" || text === tickTarget) return;
+  tickTarget = text;
+  if (tickBusy) return;
+  const col = $(".tick-col");
+  const cur = $(".t-cur .tt");
+  const nxt = $(".t-next .tt");
+  if (!cur.textContent || reduceMotion) {
+    cur.textContent = text;
+    $(".ticker").title = text;
     return;
   }
-  tickerShown = "";
-  let i = 0;
-  tickerTimer = window.setInterval(() => {
-    i += 2;
-    tickerShown = text.slice(0, i);
-    el.textContent = tickerShown;
-    if (i >= text.length) clearInterval(tickerTimer);
-  }, 16);
+  tickBusy = true;
+  nxt.textContent = text;
+  col.classList.add("roll");
+  window.setTimeout(() => {
+    cur.textContent = nxt.textContent;
+    col.classList.add("snap");
+    col.classList.remove("roll");
+    void col.offsetWidth;
+    col.classList.remove("snap");
+    $(".ticker").title = cur.textContent ?? "";
+    tickBusy = false;
+    if (tickTarget !== cur.textContent) {
+      const t = tickTarget;
+      tickTarget = "";
+      rollTicker(t);
+    }
+  }, 600);
 }
 
-function renderDots() {
-  const worlds = state.snapshot?.worlds ?? settings.worlds.map((w) => ({ ...w, state: "empty", headline: "", open: 0 }) as unknown as WorldStatus);
-  $(".dots").innerHTML = worlds
-    .map(
-      (w) => `<button type="button" role="listitem" class="dot st-${w.state}" data-world="${esc(w.id)}"
-        style="--c:${esc(w.color)}" title="${esc(w.name)}: ${esc(w.headline)}" aria-label="${esc(w.name)}: ${esc(w.headline)}">${esc(w.short)}</button>`,
-    )
-    .join("");
+// ── rendering ───────────────────────────────────────────────────────────────
+
+function worldsNow(): WorldStatus[] {
+  return state.snapshot?.worlds ?? settings.worlds.map((w) => ({ ...w, state: "empty", headline: "", open: 0, items: [] }) as unknown as WorldStatus);
+}
+
+function renderIdle() {
+  const worlds = worldsNow();
+  if (def.id === "liquid") {
+    swapText($(".idle-text"), summary());
+    setHtml($(".mini-dots"), worlds.map((w) => `<i class="st-${w.state}"></i>`).join(""));
+  }
+  if (def.id === "terminal") {
+    rollTicker(tickerLine());
+    setHtml(
+      $(".dots"),
+      worlds
+        .map(
+          (w) => `<button type="button" role="listitem" class="dot st-${w.state}" data-world="${esc(w.id)}"
+          title="${esc(w.name)}: ${esc(w.headline)}" aria-label="${esc(w.name)}: ${esc(w.headline)}">${esc(w.short)}</button>`,
+        )
+        .join(""),
+    );
+    renderMic();
+  }
+  if (def.id === "presence") renderHalo(worlds);
+}
+
+const HALO_COLOR: Record<string, string> = { alert: "#ff6b5d", attention: "#ffb547", active: "#3ddc84", quiet: "#7d8c9a", empty: "#4a5866" };
+
+function renderHalo(worlds: WorldStatus[]) {
+  const svg = dos?.querySelector(".halo") as HTMLElement | null;
+  if (!svg || !worlds.length) return;
+  const C = 2 * Math.PI * 47;
+  const seg = C / worlds.length;
+  setHtml(
+    svg,
+    worlds
+      .map(
+        (w, i) =>
+          `<circle cx="50" cy="50" r="47" fill="none" stroke="${HALO_COLOR[w.state]}" stroke-width="2.6" stroke-linecap="round" stroke-dasharray="${(seg - 7).toFixed(2)} ${(C - seg + 7).toFixed(2)}" transform="rotate(${(i * 360) / worlds.length - 90} 50 50)"></circle>`,
+      )
+      .join(""),
+  );
 }
 
 function renderMic() {
   const v = state.voice;
   const mic = $(".mic");
+  if (!mic) return;
   mic.className = "mic";
   if (v.onCall) mic.classList.add("call");
   else if (v.dictating) mic.classList.add("hot");
   else if (v.listening) mic.classList.add("on");
   if (v.muted) mic.classList.add("muted");
   mic.title = v.onCall ? "On a call — Dos is quiet" : `Talk to Dos (${settings.voice.hotkey})`;
-  mic.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>${v.onCall || v.muted ? '<path d="M2 2l12 12" stroke="currentColor" stroke-width="1.4"/>' : ""}</svg>`;
+  setHtml(mic, `${ICON.mic}${v.onCall || v.muted ? '<i class="slash"></i>' : ""}`);
 }
 
 function feedLine(f: FeedItem) {
@@ -277,7 +642,7 @@ function feedLine(f: FeedItem) {
     f.body || f.kind === "reply" ? `<button type="button" class="link" data-say="${esc(f.id)}">read</button>` : "",
     f.url ? `<button type="button" class="link" data-open="${esc(f.url)}">open</button>` : "",
   ].join("");
-  return `<article class="line k-${f.kind}${f.alert ? " is-alert" : ""}">
+  return `<article class="line row k-${f.kind}${f.alert ? " is-alert" : ""}">
     <time>${clock(f.at)}</time>
     <div class="line-main">
       <div class="line-head"><span class="who">${esc(who)}</span>${w ? `<span class="wtag" style="--c:${esc(w.color)}">${esc(w.short)}</span>` : ""}<span class="tag">${esc(tag)}</span></div>
@@ -294,12 +659,20 @@ function stateWord(w: WorldStatus) {
 function worldRow(w: WorldStatus) {
   const open = openWorld === w.id;
   const items = open
-    ? `<ul class="items">${w.items
-        .slice(0, 6)
-        .map((i) => `<li><span class="stage s-${i.stage}">${i.stage}</span><button type="button" class="link" data-open="${esc(i.url)}">${esc(i.name)}</button>${i.flags.filter((f) => f !== "on-hold").map((f) => `<span class="flag f-${slug(f)}">${esc(f)}</span>`).join("")}</li>`)
-        .join("") || "<li class=\"dim\">nothing open</li>"}</ul>`
+    ? `<ul class="items">${
+        w.items
+          .slice(0, 6)
+          .map(
+            (i) =>
+              `<li><span class="stage-tag s-${i.stage}">${i.stage}</span><button type="button" class="link" data-open="${esc(i.url)}">${esc(i.name)}</button>${i.flags
+                .filter((f) => f !== "on-hold")
+                .map((f) => `<span class="flag f-${slug(f)}">${esc(f)}</span>`)
+                .join("")}</li>`,
+          )
+          .join("") || '<li class="dim">nothing open</li>'
+      }</ul>`
     : "";
-  return `<div class="world st-${w.state}${open ? " open" : ""}" style="--c:${esc(w.color)}">
+  return `<div class="world row st-${w.state}${open ? " open" : ""}" style="--c:${esc(w.color)}">
     <button type="button" class="world-head" data-world="${esc(w.id)}" aria-expanded="${open}">
       <span class="sq">${esc(w.short)}</span>
       <span class="wname">${esc(w.name)}</span>
@@ -311,69 +684,113 @@ function worldRow(w: WorldStatus) {
   </div>`;
 }
 
-function askCard(a: Ask, big = false) {
+function askCard(a: Ask) {
   const w = worldById(a.world);
-  return `<div class="ask${big ? " big" : ""}">
+  return `<div class="ask row">
     <p class="q">${esc(a.question)}</p>
     ${a.detail ? `<p class="d">${esc(a.detail)}</p>` : ""}
     <div class="ask-meta">${w ? `<span class="wtag" style="--c:${esc(w.color)}">${esc(w.short)}</span>` : ""}<span class="dim">from ${esc(a.source === "trello" ? "the Dos board" : a.source)}</span>${a.url ? `<button type="button" class="link" data-open="${esc(a.url)}">card</button>` : ""}</div>
-    <div class="ask-acts">
-      <button type="button" class="btn go" data-decide="do_it" data-ask="${esc(a.id)}">Do it</button>
-      <button type="button" class="btn" data-decide="hold" data-ask="${esc(a.id)}">Hold</button>
-      <button type="button" class="btn" data-decide="skip" data-ask="${esc(a.id)}">Skip</button>
-    </div>
+    <div class="ask-acts">${decideButtons(a.id)}</div>
   </div>`;
+}
+
+function decideButtons(id: string) {
+  return `<button type="button" class="pill go" data-decide="do_it" data-ask="${esc(id)}"><kbd>Y</kbd>Do it</button>
+    <button type="button" class="pill" data-decide="hold" data-ask="${esc(id)}"><kbd>H</kbd>Hold</button>
+    <button type="button" class="pill" data-decide="skip" data-ask="${esc(id)}"><kbd>S</kbd>Skip</button>`;
+}
+
+function positionTabPill() {
+  const cur = shell.querySelector<HTMLElement>(".tabs [data-tab].on");
+  const pill = shell.querySelector<HTMLElement>(".tabpill");
+  if (!cur || !pill) return;
+  pill.style.width = `${cur.offsetWidth}px`;
+  pill.style.transform = `translateX(${cur.offsetLeft}px)`;
 }
 
 function renderView() {
   const view = $(".view");
-  document.querySelectorAll<HTMLButtonElement>(".tabs [data-tab]").forEach((b) => {
+  shell.querySelectorAll<HTMLButtonElement>(".tabs [data-tab]").forEach((b) => {
     const on = b.dataset.tab === tab;
     b.classList.toggle("on", on);
     b.setAttribute("aria-selected", String(on));
   });
   $(".tabs .count").textContent = state.asks.length ? ` ${state.asks.length}` : "";
+  swapText($(".p-greet"), def.id === "presence" ? `${greeting()}.` : "dos");
+  swapText($(".p-sum"), summary().replace(/^./, (c) => c.toUpperCase()));
+  positionTabPill();
 
   if (!state.trelloReady) {
-    view.innerHTML = `<div class="empty"><p>Dos can't see your boards yet.</p><p class="dim">Add your Trello API key and token, and the pings, worlds and questions show up here.</p><button type="button" class="btn go" data-act="settings">Open settings</button></div>`;
+    setHtml(view, `<div class="empty"><p>Dos can't see your boards yet.</p><p class="dim">Add your Trello API key and token, and the pings, worlds and questions show up here.</p><button type="button" class="pill go" data-act="settings">Open settings</button></div>`);
     return;
   }
   if (tab === "feed") {
-    view.innerHTML = state.feed.length
-      ? state.feed.slice(0, 40).map(feedLine).join("")
-      : `<div class="empty"><p>Nothing yet.</p><p class="dim">Pings from your scheduled tasks land here as they arrive.</p></div>`;
+    setHtml(
+      view,
+      state.feed.length
+        ? state.feed.slice(0, 40).map(feedLine).join("")
+        : `<div class="empty"><p>Nothing yet.</p><p class="dim">Pings from your scheduled tasks land here as they arrive.</p></div>`,
+    );
   } else if (tab === "worlds") {
     const worlds = state.snapshot?.worlds ?? [];
-    view.innerHTML = worlds.length ? `<div class="worlds">${worlds.map(worldRow).join("")}</div>` : `<div class="empty"><p>Reading the boards…</p></div>`;
+    setHtml(view, worlds.length ? `<div class="worlds">${worlds.map(worldRow).join("")}</div>` : `<div class="empty"><p>Reading the boards…</p></div>`);
   } else {
-    view.innerHTML = state.asks.length
-      ? state.asks.map((a) => askCard(a)).join("")
-      : `<div class="empty"><p>Nothing needs your call.</p><p class="dim">When Dos wants a go-ahead, the question shows up here and on the bar. Answer by clicking, or say “${esc(settings.voice.wakeWord)}, do it”.</p></div>`;
+    setHtml(
+      view,
+      state.asks.length
+        ? state.asks.map(askCard).join("")
+        : `<div class="empty"><p>Nothing needs your call.</p><p class="dim">When Dos wants a go-ahead, the question shows up here and on the bar. Answer by clicking, or say “${esc(settings.voice.wakeWord)}, do it”.</p></div>`,
+    );
   }
 }
 
 function renderAlert() {
-  const col = $(".alert-col");
+  const el = $(".l-alert");
   if (!alert) {
-    col.innerHTML = "";
+    setHtml(el, "");
     return;
   }
+  const term = def.id === "terminal";
+  const now = clock(new Date().toISOString());
+  let html: string;
   if (alert.kind === "ask") {
     const a = state.asks.find((x) => x.id === alert!.id) ?? {
       id: alert.id, question: alert.title, detail: alert.body, world: alert.world, url: alert.url ?? "", at: null, source: "dos",
     };
-    col.innerHTML = `<p class="alert-kind">question</p>${askCard(a, true)}`;
-    return;
+    const from = a.source === "trello" ? "Dos board" : a.source;
+    const kick = term ? `? dos asks · ${from}` : def.id === "presence" ? "Dos needs a decision" : `Dos asks · ${from}`;
+    html = `<div class="a-wrap"><span class="face-gap"></span><div class="a-main">
+      <span class="kicker k-ask">${esc(kick)}</span>
+      <h2 class="a-title">${esc(a.question)}</h2>
+      ${a.detail ? `<p class="a-body">${esc(a.detail)}</p>` : ""}
+      ${answered ? `<p class="a-done">${ICON.check}<span>${esc(answered)}</span></p>` : `<div class="a-acts">${decideButtons(a.id)}</div>`}
+    </div></div>`;
+  } else {
+    const head = firstSentence(alert.body || alert.title);
+    const rest = alert.body.slice(head.length).trim();
+    const kick = term ? `[${now}] ${alert.title.toLowerCase()} · ${alert.kind}` : `${alert.title} · ${now}`;
+    html = `<div class="a-wrap"><span class="face-gap"></span><div class="a-main">
+      <span class="kicker">${esc(kick)}</span>
+      <h2 class="a-title">${esc(head)}</h2>
+      ${rest ? `<p class="a-body">${esc(rest)}</p>` : ""}
+      <div class="a-acts">
+        ${alert.url ? `<button type="button" class="pill go" data-open="${esc(alert.url)}"><kbd>O</kbd>Open</button>` : ""}
+        <button type="button" class="pill" data-act="read-focus"><kbd>R</kbd>Read it</button>
+        <button type="button" class="pill ghost" data-act="dismiss"><kbd>Esc</kbd>Later</button>
+      </div>
+    </div></div>`;
   }
-  const w = worldById(alert.world);
-  col.innerHTML = `<p class="alert-kind">${esc(alert.kind === "ping" ? "new ping" : "message")}${w ? ` <span class="wtag" style="--c:${esc(w.color)}">${esc(w.short)}</span>` : ""}</p>
-    <h2>${esc(alert.title)}</h2>
-    <p class="alert-body">${esc(alert.body)}</p>
-    <div class="ask-acts">
-      ${alert.url ? `<button type="button" class="btn go" data-open="${esc(alert.url)}">Open</button>` : ""}
-      <button type="button" class="btn" data-act="read-focus">Read it to me</button>
-      <button type="button" class="btn" data-act="dismiss">Dismiss</button>
-    </div>`;
+  setHtml(el, html);
+}
+
+function renderWords() {
+  if (!playing) return;
+  const n = speech.words.length;
+  const t = performance.now() - speech.start;
+  const lit = speech.ms > 0 ? Math.min(n, Math.ceil((n * t * 1.05) / speech.ms)) : n;
+  if (lit === speech.lit) return;
+  speech.lit = lit;
+  shell.querySelectorAll<HTMLElement>(".words .w").forEach((w, i) => w.classList.toggle("lit", i < lit));
 }
 
 function renderStatus() {
@@ -388,24 +805,36 @@ function renderStatus() {
   if (v.problem) parts.push(`<span class="warn" title="${esc(v.problem)}">${esc(v.problem.length > 70 ? v.problem.slice(0, 68) + "…" : v.problem)}</span>`);
   for (const p of state.problems.slice(0, 1)) parts.push(`<span class="warn" title="${esc(p)}">${esc(p)}</span>`);
   const right = state.polling ? "reading boards…" : state.snapshot ? `boards ${clock(state.snapshot.takenAt)}` : "";
-  $(".status").innerHTML = `<div class="left">${parts.join("")}</div><div class="right dim">${state.paused ? "paused" : esc(right)}${settings.ui.stealth ? ` · <span title="Hidden from screen sharing and recordings">stealth</span>` : ""}</div>`;
+  setHtml(
+    $(".status"),
+    `<div class="left">${parts.join("")}</div><div class="right dim">${state.paused ? "paused" : esc(right)}${settings.ui.stealth ? ` · <span title="Hidden from screen sharing and recordings">stealth</span>` : ""}</div>`,
+  );
+  const cap = shell.querySelector<HTMLElement>(".face-caption");
+  if (cap) cap.textContent = caption();
+  const li = shell.querySelector<HTMLElement>(".li-text");
+  if (li) li.textContent = v.noteMode ? "Listening for your note…" : "Listening…";
 }
 
 function render() {
   if (!state) return;
-  renderDots();
-  renderMic();
-  typeTicker(tickerLine());
-  shell.classList.toggle("has-ask", state.asks.length > 0);
+  renderIdle();
+  stage.classList.toggle("has-ask", state.asks.length > 0);
   if (mode === "panel") renderView();
   if (mode === "alert") renderAlert();
-  if (mode !== "bar") {
-    $(".face-caption").textContent = caption();
-    renderStatus();
-  }
+  renderStatus();
+  renderWords();
   const m = mood();
-  bigFace.setMood(m);
-  miniFace.setMood(m);
+  bigFace?.setMood(m);
+  miniFace?.setMood(m);
+  if (dos) {
+    const t = tone();
+    for (const c of ["green", "amber", "blue", "quiet"]) dos.classList.toggle(`tone-${c}`, c === t);
+    dos.classList.toggle("talking", playing);
+    dos.classList.toggle("listening", state.voice.dictating);
+    dos.classList.toggle("thinking", Date.now() < thinkingUntil);
+    dos.classList.toggle("happy", Date.now() < happyUntil);
+  }
+  layout();
   applyVis();
 }
 
@@ -417,8 +846,9 @@ function showAlert(a: Alert) {
     return;
   }
   alert = a;
-  setMode("alert");
-  renderAlert();
+  answered = null;
+  if (mode === "alert") render();
+  else setMode("alert");
   armAlertTimer();
 }
 
@@ -430,152 +860,200 @@ function armAlertTimer() {
   }, secs * 1000);
 }
 
+const ANSWERED: Record<string, string> = { do_it: "Done — on it.", hold: "Held. I’ll ask again later.", skip: "Skipped." };
+
 // ── events ──────────────────────────────────────────────────────────────────
 
-// Press and pull past a few pixels: Windows takes over and moves the window.
-const barEl = $(".bar");
-barEl.addEventListener("pointerdown", (e) => {
-  suppressClick = false;
-  press = e.button === 0 && !(e.target as HTMLElement).closest(".mic") ? { x: e.screenX, y: e.screenY } : null;
-});
-barEl.addEventListener("pointermove", (e) => {
-  if (!press) return;
-  if (!(e.buttons & 1)) {
-    press = null;
-    return;
-  }
-  if (Math.hypot(e.screenX - press.x, e.screenY - press.y) < 5) return;
-  press = null;
-  suppressClick = true;
-  dragging = true;
-  shell.classList.add("dragging");
-  void Bridge.beginDrag();
-});
-barEl.addEventListener("pointerup", () => (press = null));
-
-barEl.addEventListener("click", (e) => {
-  if (suppressClick) {
+function bindEvents() {
+  // Press and pull past a few pixels: Windows takes over and moves the window
+  // (the bubble is thrown instead — its window covers the screen).
+  stage.addEventListener("pointerdown", (e) => {
     suppressClick = false;
-    return;
-  }
-  const t = e.target as HTMLElement;
-  if (t.closest(".mic")) {
-    cue("wake");
-    void Bridge.pushToTalk();
-    return;
-  }
-  const dot = t.closest<HTMLElement>(".dot");
-  if (dot) {
-    tab = "worlds";
-    openWorld = dot.dataset.world ?? null;
-    setMode("panel");
-    renderView();
-    return;
-  }
-  miniFace.poke();
-  setMode(mode === "panel" ? "bar" : "panel");
-});
-
-shell.addEventListener("click", async (e) => {
-  const t = e.target as HTMLElement;
-  const el = t.closest<HTMLElement>("[data-tab],[data-act],[data-open],[data-decide],[data-say],[data-world]");
-  if (!el || el.closest(".bar")) return;
-  if (el.dataset.tab) {
-    tab = el.dataset.tab as Tab;
-    renderView();
-  } else if (el.dataset.open) {
-    void Bridge.openLink(el.dataset.open);
-  } else if (el.dataset.decide) {
-    const id = el.dataset.ask!;
-    el.closest(".ask")?.classList.add("answered");
-    try {
-      await Bridge.decide(id, el.dataset.decide as "do_it" | "hold" | "skip");
-      happyUntil = Date.now() + 1400;
-      if (mode === "alert") setMode("bar");
-    } catch (err) {
-      el.closest(".ask")?.classList.remove("answered");
-      cue("error");
-      void Bridge.log(`decide failed: ${String(err)}`);
+    press = null;
+    if (e.button !== 0) return;
+    const t = e.target as HTMLElement;
+    if (bubble && t.closest(".dos-btn")) {
+      startThrow(e);
+      return;
     }
-  } else if (el.dataset.say) {
-    const item = state.feed.find((f) => f.id === el.dataset.say);
-    if (item) void Bridge.say(item.kind === "reply" || item.kind === "heard" ? item.title : `${item.title}. ${item.body}`);
-  } else if (el.dataset.world) {
-    openWorld = openWorld === el.dataset.world ? null : el.dataset.world;
-    if (openWorld) void Bridge.runIntent({ kind: "world", value: openWorld });
-    renderView();
-  } else {
-    switch (el.dataset.act) {
-      case "brief":
-        thinkingUntil = Date.now() + 900;
-        void Bridge.runIntent({ kind: "status" });
-        break;
-      case "talk":
-        cue("wake");
-        void Bridge.pushToTalk();
-        break;
-      case "refresh":
-        void Bridge.refresh();
-        break;
-      case "settings":
-        void Bridge.openSettings();
-        break;
-      case "close":
-      case "dismiss":
-        setMode("bar");
-        break;
-      case "read-focus":
-        void Bridge.runIntent({ kind: "read_that" });
-        break;
+    if (!t.closest(".drag-zone, .dos-btn") || t.closest(".mic, [data-tab], .icon, input, .dot")) return;
+    press = { x: e.screenX, y: e.screenY };
+  });
+  stage.addEventListener("pointermove", (e) => {
+    if (!press) return;
+    if (!(e.buttons & 1)) {
+      press = null;
+      return;
     }
-  }
-});
+    if (Math.hypot(e.screenX - press.x, e.screenY - press.y) < 5) return;
+    press = null;
+    suppressClick = true;
+    dragging = true;
+    stage.classList.add("dragging");
+    void Bridge.beginDrag();
+  });
+  stage.addEventListener("pointerup", () => (press = null));
 
-shell.addEventListener("mouseenter", () => {
-  hovering = true;
-  clearTimeout(leaveTimer);
-  wake();
-});
-shell.addEventListener("mouseleave", () => {
-  hovering = false;
-  lastActive = Date.now();
-  clearTimeout(leaveTimer);
+  stage.addEventListener("click", async (e) => {
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
+    const t = e.target as HTMLElement;
+    if (t.closest(".mic")) {
+      cue("wake");
+      void Bridge.pushToTalk();
+      return;
+    }
+    const el = t.closest<HTMLElement>("[data-tab],[data-act],[data-open],[data-decide],[data-say],[data-world]");
+    if (!el) return;
+    if (el.dataset.tab) {
+      tab = el.dataset.tab as Tab;
+      renderView();
+    } else if (el.dataset.world && el.classList.contains("dot")) {
+      tab = "worlds";
+      openWorld = el.dataset.world;
+      setMode("panel");
+      renderView();
+    } else if (el.dataset.open) {
+      void Bridge.openLink(el.dataset.open);
+    } else if (el.dataset.decide) {
+      const id = el.dataset.ask!;
+      const d = el.dataset.decide as "do_it" | "hold" | "skip";
+      el.closest(".ask")?.classList.add("answered");
+      try {
+        await Bridge.decide(id, d);
+        happyUntil = Date.now() + 1400;
+        if (mode === "alert") {
+          answered = ANSWERED[d];
+          render();
+          clearTimeout(alertTimer);
+          alertTimer = window.setTimeout(() => setMode("bar"), 1500);
+        }
+      } catch (err) {
+        el.closest(".ask")?.classList.remove("answered");
+        cue("error");
+        void Bridge.log(`decide failed: ${String(err)}`);
+      }
+    } else if (el.dataset.say) {
+      const item = state.feed.find((f) => f.id === el.dataset.say);
+      if (item) void Bridge.say(item.kind === "reply" || item.kind === "heard" ? item.title : `${item.title}. ${item.body}`);
+    } else if (el.dataset.world) {
+      openWorld = openWorld === el.dataset.world ? null : el.dataset.world;
+      if (openWorld) void Bridge.runIntent({ kind: "world", value: openWorld });
+      renderView();
+    } else {
+      switch (el.dataset.act) {
+        case "open":
+          miniFace?.poke();
+          setMode(mode === "panel" ? "bar" : "panel");
+          break;
+        case "brief":
+          thinkingUntil = Date.now() + 900;
+          void Bridge.runIntent({ kind: "status" });
+          break;
+        case "talk":
+          cue("wake");
+          void Bridge.pushToTalk();
+          break;
+        case "refresh":
+          void Bridge.refresh();
+          break;
+        case "settings":
+          void Bridge.openSettings();
+          break;
+        case "close":
+        case "dismiss":
+          setMode("bar");
+          break;
+        case "read-focus":
+          void Bridge.runIntent({ kind: "read_that" });
+          break;
+      }
+    }
+  });
+
+  const enter = () => {
+    hovering = true;
+    clearTimeout(leaveTimer);
+    wake();
+  };
+  const leave = () => {
+    hovering = false;
+    lastActive = Date.now();
+    clearTimeout(leaveTimer);
+    const input = $<HTMLInputElement>("#cmd-input");
+    if (mode === "panel" && document.activeElement !== input) leaveTimer = window.setTimeout(() => setMode("bar"), 5000);
+    else if (mode === "alert") armAlertTimer();
+  };
+  shell.addEventListener("pointerenter", enter);
+  shell.addEventListener("pointerleave", leave);
+  dos?.addEventListener("pointerenter", enter);
+  dos?.addEventListener("pointerleave", leave);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (playing) {
+        stopAll();
+        void Bridge.stopSpeaking();
+      } else setMode("bar");
+    }
+  });
+
   const input = $<HTMLInputElement>("#cmd-input");
-  if (mode === "panel" && document.activeElement !== input) {
-    leaveTimer = window.setTimeout(() => setMode("bar"), 5000);
-  } else if (mode === "alert") {
-    armAlertTimer();
+  input.addEventListener("focus", () => void Bridge.setKeyboard(true));
+  input.addEventListener("blur", () => void Bridge.setKeyboard(false));
+  $("form.cmd").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    thinkingUntil = Date.now() + 700;
+    void Bridge.runText(text);
+  });
+
+  window.addEventListener("resize", () => layout());
+}
+
+function onCursor(c: CursorInfo) {
+  cursor = { x: c.x, y: c.y };
+  idleMs = c.idleMs;
+  if (c.inside && vis === "tucked") wake();
+  for (const [face, sel] of [[bigFace, ".p-side .face"], [miniFace, ".mini-face"]] as const) {
+    if (!face) continue;
+    const r = $(sel).getBoundingClientRect();
+    face.lookAt(c.x - r.left, c.y - r.top);
   }
-});
-
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    if (playing) {
-      stopAll();
-      void Bridge.stopSpeaking();
-    } else setMode("bar");
+  if (eyes && dosBtn && !(bubble && !seat)) {
+    const r = dosBtn.getBoundingClientRect();
+    const dx = c.x - (r.left + r.width / 2);
+    const dy = c.y - (r.top + r.height / 2);
+    eyes.style.transform = `translate(${Math.max(-3, Math.min(3, dx / 40)).toFixed(1)}px, ${Math.max(-2, Math.min(2, dy / 40)).toFixed(1)}px)`;
   }
-});
+  if (bubble) {
+    const roam = roaming();
+    if (roam !== (seat === null) && scene === "idle") placeDos();
+  }
+}
 
-const input = $<HTMLInputElement>("#cmd-input");
-input.addEventListener("focus", () => void Bridge.setKeyboard(true));
-input.addEventListener("blur", () => void Bridge.setKeyboard(false));
-$("form.cmd").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const text = input.value.trim();
-  if (!text) return;
-  input.value = "";
-  thinkingUntil = Date.now() + 700;
-  void Bridge.runText(text);
-});
+// ── theme ───────────────────────────────────────────────────────────────────
 
-// ── boot ────────────────────────────────────────────────────────────────────
+const lightQuery = window.matchMedia("(prefers-color-scheme: light)");
+
+function applyTheme() {
+  const t = settings.ui.theme;
+  const light = t === "light" || (t === "system" && lightQuery.matches);
+  document.documentElement.classList.toggle("theme-light", light);
+}
 
 function applySettings(s: Settings) {
   settings = s;
   configureSound(s.ui.sound, s.ui.volume);
   setVoiceVolume(Math.min(1, 0.4 + s.ui.volume));
+  applyTheme();
 }
+
+// ── boot ────────────────────────────────────────────────────────────────────
 
 async function boot() {
   // The window can load before the app has finished starting; keep asking.
@@ -590,21 +1068,32 @@ async function boot() {
   }
   applySettings(info.settings);
   state = info.state;
-  setDocked(info.docked);
+  def = skinOf(settings.ui.skin);
+  build();
+  bindEvents();
+  docked = info.docked;
+  stage.classList.toggle("floating", !docked);
+  lightQuery.addEventListener("change", applyTheme);
   requestAnimationFrame(() => {
-    bigFace.resize();
-    miniFace.resize();
-    bigFace.start();
-    miniFace.start();
-    pushRect();
+    bigFace?.resize();
+    miniFace?.resize();
+    bigFace?.start();
+    miniFace?.start();
   });
   render();
+  // First paint without a morph from nothing.
+  requestAnimationFrame(() => stage.classList.add("ready"));
 
   void Bridge.onState((s) => {
     state = s;
     render();
   });
   void Bridge.onSettings((s) => {
+    // A new look rebuilds the page; everything else applies in place.
+    if (skinOf(s.ui.skin).id !== def.id) {
+      location.reload();
+      return;
+    }
     applySettings(s);
     render();
   });
@@ -634,9 +1123,9 @@ async function boot() {
       wake();
     } else if (cmd === "drag-end") {
       dragging = false;
-      shell.classList.remove("dragging");
+      stage.classList.remove("dragging");
       wake();
-      pushRect();
+      pushRects();
     } else if (cmd === "dock:top" || cmd === "dock:free") setDocked(cmd === "dock:top");
     else if (cmd === "expand") setMode("panel");
     else if (cmd === "collapse") setMode("bar");
@@ -651,13 +1140,16 @@ async function boot() {
     enqueue(
       s,
       (lvl) => {
-        bigFace.setLevel(lvl);
-        miniFace.setLevel(lvl);
+        bigFace?.setLevel(lvl);
+        miniFace?.setLevel(lvl);
+        if (dos) dos.style.setProperty("--lvl", lvl.toFixed(2));
       },
       (started) => {
         playing = true;
         thinkingUntil = 0;
         speakingText = started.text;
+        speech = { words: started.text.split(/\s+/).filter(Boolean), start: performance.now(), ms: started.millis || 0, lit: -1 };
+        setHtml($(".words"), speech.words.map((w) => `<span class="w">${esc(w)} </span>`).join(""));
         render();
       },
       (id) => {
@@ -673,36 +1165,19 @@ async function boot() {
     playing = false;
     render();
   });
-  void Bridge.onCursor(({ x, y, inside }) => {
-    // Touching the tucked line (or the faded bar) brings it back.
-    if (inside && vis === "tucked") wake();
-    for (const [face, sel] of [[bigFace, ".face"], [miniFace, ".mini-face"]] as const) {
-      const r = $(sel).getBoundingClientRect();
-      face.lookAt(x - r.left, y - r.top);
-    }
-  });
+  void Bridge.onCursor(onCursor);
   if (!inTauri && import.meta.env.DEV) {
-    document.addEventListener("mousemove", (e) => {
-      for (const [face, sel] of [[bigFace, ".face"], [miniFace, ".mini-face"]] as const) {
-        const r = $(sel).getBoundingClientRect();
-        face.lookAt(e.clientX - r.left, e.clientY - r.top);
-      }
-    });
+    document.addEventListener("mousemove", (e) => onCursor({ x: e.clientX, y: e.clientY, inside: true, idleMs: 60_000 }));
     await mockScenes();
   }
-  // Keep time-based moods (thinking, happy) moving between events.
+  // Keep time-based moods (thinking, happy, words, roaming) moving between events.
   setInterval(render, 1000);
+  setInterval(renderWords, 90);
 }
 
 /** Browser preview only: `?view=` jumps to a state for screenshots. */
 async function mockScenes() {
   const { mockView, mockEmit } = await import("./mock");
-  const look = new URLSearchParams(location.search).get("look");
-  if (look) {
-    const [x, y] = look.split(",").map(Number);
-    bigFace.lookAt(x, y);
-    miniFace.lookAt(x, y);
-  }
   switch (mockView) {
     case "panel":
     case "setup":
@@ -714,6 +1189,10 @@ async function mockScenes() {
       openWorld = "farm";
       setMode("panel");
       break;
+    case "asks":
+      tab = "asks";
+      setMode("panel");
+      break;
     case "ask":
       showAlert({ kind: "ask", id: state.asks[0].id, title: state.asks[0].question, body: state.asks[0].detail, world: null, url: null });
       break;
@@ -722,24 +1201,24 @@ async function mockScenes() {
         kind: "ping",
         id: "ping:1",
         title: "Morning Briefing",
-        body: "Open day — just the noon BI standup, nothing needs you this morning.",
+        body: "Open day — just the noon BI standup. Nothing needs you this morning.",
         world: null,
         url: "https://claude.ai",
       });
       break;
-    case "listening":
-      setMode("panel");
-      break;
-    case "speaking":
+    case "speaking": {
+      const text = "Four things need you. Land and Housing first — the modular venture needs a look.";
       playing = true;
-      speakingText = "Four things need you. Land and Housing: Modular housing venture needs a look.";
-      setMode("panel");
+      speakingText = text;
+      speech = { words: text.split(" "), start: performance.now(), ms: 5200, lit: -1 };
+      setHtml($(".words"), speech.words.map((w) => `<span class="w">${esc(w)} </span>`).join(""));
       setInterval(() => {
         const v = 0.35 + Math.random() * 0.6;
-        bigFace.setLevel(v);
-        miniFace.setLevel(v);
+        bigFace?.setLevel(v);
+        miniFace?.setLevel(v);
       }, 90);
       break;
+    }
   }
   mockEmit("state", state);
 }

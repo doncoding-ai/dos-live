@@ -96,6 +96,12 @@ pub struct UiSettings {
     pub hide_after_secs: f64,
     /// Global hotkey that hides the bar until something needs you.
     pub hide_hotkey: String,
+    /// "liquid", "terminal", "presence" or "bubble".
+    pub skin: String,
+    /// "dark", "light" or "system" (follow Windows).
+    pub theme: String,
+    /// Bubble style: "idle" (roam while you're away), "always" or "never".
+    pub roam: String,
 }
 
 impl Default for UiSettings {
@@ -112,6 +118,9 @@ impl Default for UiSettings {
             auto_hide: true,
             hide_after_secs: 8.0,
             hide_hotkey: "Ctrl+Alt+H".into(),
+            skin: "liquid".into(),
+            theme: "dark".into(),
+            roam: "idle".into(),
         }
     }
 }

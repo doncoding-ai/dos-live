@@ -31,6 +31,13 @@ needs your call. And it answers when you say "Dos".
 - **Hermes, locally.** Anything that isn't about the boards goes to your
   Hermes agent's local API, and the answer is spoken. Anything that mentions
   work never leaves the app.
+- **Four looks, dark or light.** Pick one in Settings → Look:
+  - **Liquid notch:** one shape that morphs between states, with Dos's eyes inside it.
+  - **Terminal:** the `dos:~$` bar. Its drawers print in line by line.
+  - **Presence orb:** Dos is a glowing orb ringed by your worlds, and cards grow out of it.
+  - **Bubble:** the orb bounces around your screen with a little tail while you're away. It zips into the notch when something needs you, and you can throw it.
+
+  The theme can be Dark, Light or Match Windows.
 - **Stealth by default.** The island is invisible to screen sharing and
   recording (Teams, Meet, Zoom, OBS). You see it; they don't. When another app
   holds the microphone, Dos goes quiet and stops listening.

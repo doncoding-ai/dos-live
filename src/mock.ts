@@ -1,6 +1,7 @@
 // Browser-only stand-in for the Rust side, seeded with boards shaped like the
 // real Dos / Don / Boom boards. `?view=panel|alert|ask|listening|speaking|call|setup`
-// jumps straight to a state for design work and screenshots.
+// jumps straight to a state for design work and screenshots; `?skin=` and
+// `?theme=` pick the look.
 
 import type { BootInfo, Settings, ViewState, WorldStatus } from "./types";
 
@@ -17,7 +18,8 @@ export function mockEmit(name: string, payload: unknown) {
   listeners.get(name)?.forEach((h) => h(payload));
 }
 
-const view = new URLSearchParams(location.search).get("view") ?? "";
+const params = new URLSearchParams(location.search);
+const view = params.get("view") ?? "";
 
 const worlds: WorldStatus[] = [
   w("work", "Work", "W", "#ffd24a", "attention", 1, 1, 0, 0, 0, 1, "4 open · 1 due soon", [
@@ -145,7 +147,8 @@ const settings: Settings = {
   callGuard: true,
   callGuardIgnore: ["SpeechRuntime"],
   hermes: { enabled: true, url: "http://127.0.0.1:8642/v1", model: "hermes-agent" },
-  ui: { screen: "primary", sound: true, volume: 0.5, stealth: true, discreetWork: true, autostart: true, expandOnAlert: true, collapseAfterSecs: 14, autoHide: true, hideAfterSecs: 8, hideHotkey: "Ctrl+Alt+H" },
+  ui: { screen: "primary", sound: true, volume: 0.5, stealth: true, discreetWork: true, autostart: true, expandOnAlert: true, collapseAfterSecs: 14, autoHide: true, hideAfterSecs: 8, hideHotkey: "Ctrl+Alt+H",
+    skin: params.get("skin") ?? "liquid", theme: params.get("theme") ?? "dark", roam: params.get("roam") ?? "always" },
 };
 
 export function mockInvoke(cmd: string, args?: Record<string, unknown>): unknown {

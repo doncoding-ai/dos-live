@@ -2,7 +2,7 @@
 // in a browser) it falls back to the mock in mock.ts, so the island can be
 // designed and screenshotted without Windows.
 
-import type { Alert, BootInfo, Intent, Keys, Settings, Speech, ViewState } from "./types";
+import type { Alert, BootInfo, CursorInfo, Intent, Keys, Settings, Speech, ViewState } from "./types";
 
 type Unlisten = () => void;
 
@@ -42,7 +42,8 @@ export const Bridge = {
   boot: () => call<BootInfo>("boot"),
   state: () => call<ViewState>("state"),
   saveSettings: (settings: Settings) => call<void>("save_settings", { settings }),
-  setRect: (x: number, y: number, width: number, height: number) => call<void>("set_rect", { x, y, width, height }),
+  /** The shapes that take the mouse, each [x, y, width, height]. */
+  setRects: (rects: number[][]) => call<void>("set_rects", { rects }),
   beginDrag: () => call<void>("begin_drag"),
   moveIsland: (to: "next" | "home") => call<void>("move_island", { to }),
   setKeyboard: (typing: boolean) => call<void>("set_keyboard", { typing }),
@@ -77,7 +78,7 @@ export const Bridge = {
   onCue: (h: (name: string) => void) => on<string>("cue", h),
   onUi: (h: (cmd: string) => void) => on<string>("ui", h),
   onHeard: (h: (p: { text: string }) => void) => on<{ text: string }>("heard", h),
-  onCursor: (h: (p: { x: number; y: number; inside: boolean }) => void) => on("cursor", h),
+  onCursor: (h: (p: CursorInfo) => void) => on<CursorInfo>("cursor", h),
   onSettings: (h: (s: Settings) => void) => on<Settings>("settings-changed", h),
   onVoices: (h: (v: { name: string; language: string; male: boolean }[]) => void) => on("voices", h),
 };

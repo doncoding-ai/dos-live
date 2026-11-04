@@ -95,7 +95,9 @@ async fn save_settings(app: AppHandle, shared: State<'_, Shared>, settings: Sett
     if old.ui.screen != settings.ui.screen {
         // Picking a screen in Settings overrides wherever the bar was dragged.
         island::forget_spot();
-        island::place(&app, &settings.ui.screen);
+    }
+    if old.ui.screen != settings.ui.screen || old.ui.skin != settings.ui.skin {
+        island::place(&app, &shared.gate, &settings.ui);
     }
     if old.ui.stealth != settings.ui.stealth && !island::set_stealth(&app, settings.ui.stealth) && settings.ui.stealth {
         log::line("stealth: Windows refused to hide the window from capture");
@@ -113,9 +115,10 @@ async fn state(shared: State<'_, Shared>) -> R<ViewState> {
     Ok(shared.brain.view())
 }
 
+/// The shapes that take the mouse — [x, y, width, height] in logical pixels.
 #[tauri::command]
-async fn set_rect(shared: State<'_, Shared>, x: f64, y: f64, width: f64, height: f64) -> R<()> {
-    *shared.gate.rect.lock().unwrap() = island::Rect { x, y, w: width, h: height };
+async fn set_rects(shared: State<'_, Shared>, rects: Vec<[f64; 4]>) -> R<()> {
+    *shared.gate.rects.lock().unwrap() = rects.into_iter().take(8).map(|[x, y, w, h]| island::Rect { x, y, w, h }).collect();
     Ok(())
 }
 
@@ -413,7 +416,7 @@ pub fn run() {
             boot,
             save_settings,
             state,
-            set_rect,
+            set_rects,
             begin_drag,
             move_island,
             set_keyboard,
@@ -456,7 +459,7 @@ pub fn run() {
 
             let mut hwnd = None;
             if let Some(win) = island::window(&handle) {
-                island::place(&handle, &loaded.ui.screen);
+                island::place(&handle, &gate, &loaded.ui);
                 if !island::prepare(&win, loaded.ui.stealth) && loaded.ui.stealth {
                     log::line("stealth unavailable on this Windows build");
                 }
