@@ -7,7 +7,7 @@ import "@fontsource/jetbrains-mono/800.css";
 import "./settings.css";
 
 import { Bridge } from "../bridge";
-import type { Keys, Settings } from "../types";
+import type { Keys, NaturalStatus, NaturalVoice, Settings, VoiceProgress } from "../types";
 
 let s: Settings;
 let keys: Keys;
@@ -87,12 +87,22 @@ function render() {
       ${field("Wake word", text("voice.wakeWord", s.voice.wakeWord))}
       ${field("Push-to-talk", text("voice.hotkey", s.voice.hotkey), "e.g. Ctrl+Alt+D")}
     </div>
-    <div class="grid2">
-      ${field("Dos's voice", `<select data-path="voice.voiceName"><option value="">Best male English voice</option></select>`, "Install more under Settings → Time & language → Speech.")}
-      ${field("Speed", `<input type="range" data-path="voice.rate" min="0.7" max="1.5" step="0.05" value="${s.voice.rate}"/>`)}
-    </div>
-    <div class="row">
-      <button type="button" class="btn" data-run="hello">Hear Dos</button>
+    <div class="voice-box engine-${esc(s.voice.engine)}">
+      <div class="grid2">
+        ${field("Voice engine", select("voice.engine", s.voice.engine, [["natural", "Natural — Kokoro, on this PC"], ["windows", "Windows built-in"]]))}
+        ${field("Speed", `<input type="range" data-path="voice.rate" min="0.7" max="1.5" step="0.05" value="${s.voice.rate}"/>`)}
+      </div>
+      <div class="only-natural">
+        ${field("Dos's voice", select("voice.naturalVoice", s.voice.naturalVoice, naturalVoices.map((v) => [v.id, v.label] as [string, string])))}
+        <div class="voice-dl" aria-live="polite"></div>
+      </div>
+      <div class="only-windows">
+        ${field("Windows voice", `<select data-path="voice.voiceName"><option value="">Best male English voice</option></select>`, "Install more under Settings → Time & language → Speech. These are the older, robotic-sounding voices.")}
+      </div>
+      <div class="row">
+        <button type="button" class="btn" data-run="hello">Hear Dos</button>
+      </div>
+      <p class="result" data-result="voice"></p>
     </div>
     ${check("voice.speakPings", s.voice.speakPings, "Read new pings out loud")}
     ${check("voice.speakAsks", s.voice.speakAsks, "Read questions out loud")}
@@ -160,6 +170,7 @@ function render() {
 
   <footer class="bottom"><span class="saved dim"></span><button type="button" class="ghost" data-run="quit">Quit Dos Live</button></footer>`;
   void Bridge.listVoices();
+  renderVoiceDl();
 }
 
 function setPath(obj: Record<string, unknown>, path: string, value: unknown) {
@@ -191,6 +202,10 @@ root.addEventListener("change", async (e) => {
     else if (t.type === "number" || t.type === "range") v = Number(t.value);
     setPath(s as unknown as Record<string, unknown>, t.dataset.path, v);
     scheduleSave();
+    if (t.dataset.path === "voice.engine") {
+      const box = root.querySelector<HTMLElement>(".voice-box");
+      if (box) box.className = `voice-box engine-${String(v)}`;
+    }
   } else if (t.dataset.secret && t.value.trim()) {
     try {
       await Bridge.secretSet(t.dataset.secret, t.value.trim());
@@ -243,17 +258,68 @@ root.addEventListener("click", async (e) => {
         result("relay", true, `The pipe answered: ${await Bridge.testRelay()}`);
         break;
       case "hello":
-        await Bridge.say("Dos here. I'm watching the boards.");
+        result("voice", true, s.voice.engine === "natural" && !natural?.loaded ? "Warming up the natural voice — a few seconds the first time…" : "");
+        await Bridge.voiceTest();
+        break;
+      case "voiceDownload":
+        progress = { stage: "downloading", done: 0, total: (natural?.sizeMb ?? 156) * 1_000_000, error: null };
+        renderVoiceDl();
+        await Bridge.voiceDownload();
+        natural = await Bridge.voiceStatus();
+        renderVoiceDl();
         break;
       case "quit":
         await Bridge.quit();
         break;
     }
   } catch (err) {
-    const name = run === "testHermes" ? "hermes" : run === "testRelay" ? "relay" : "trello";
+    const name = run === "testHermes" ? "hermes" : run === "testRelay" ? "relay" : run === "hello" || run === "voiceDownload" ? "voice" : "trello";
     result(name, false, String(err));
   }
 });
+
+// ── the natural voice: one-time download and status ─────────────────────────
+
+let naturalVoices: NaturalVoice[] = [];
+let natural: NaturalStatus | null = null;
+let progress: VoiceProgress | null = null;
+
+function mb(n: number) {
+  return Math.round(n / 1_000_000);
+}
+
+function renderVoiceDl() {
+  const el = root.querySelector<HTMLElement>(".voice-dl");
+  if (!el || !natural) return;
+  const p = progress;
+  if (p && (p.stage === "downloading" || p.stage === "unpacking")) {
+    const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+    el.innerHTML = `<div class="dl-bar"><span style="width:${p.stage === "unpacking" ? 100 : pct}%"></span></div>
+      <p class="hint">${p.stage === "unpacking" ? "Unpacking the voice…" : `Downloading the natural voice — ${mb(p.done)} of ${mb(p.total)} MB`}</p>`;
+    return;
+  }
+  if (p?.stage === "failed") {
+    el.innerHTML = `<p class="result bad">The download didn't finish: ${esc(p.error ?? "unknown error")}</p>
+      <div class="row"><button type="button" class="btn go" data-run="voiceDownload">Try again</button></div>`;
+    return;
+  }
+  if (natural.installed) {
+    el.innerHTML = `<p class="hint ok-line">${natural.loaded ? "✓ Natural voice ready." : "Natural voice downloaded — it loads in a few seconds."} It runs on this PC; nothing you hear is sent anywhere.</p>`;
+    return;
+  }
+  el.innerHTML = `<p class="hint">The natural voice is a one-time ${natural.sizeMb} MB download (Kokoro, open source). It runs on this PC — briefings never leave it. Until it's downloaded, Dos uses the Windows voice.</p>
+    <div class="row"><button type="button" class="btn go" data-run="voiceDownload">Download the natural voice</button></div>`;
+}
+
+async function refreshNatural() {
+  try {
+    natural = await Bridge.voiceStatus();
+    if (!natural.downloading && progress?.stage !== "failed") progress = null;
+    renderVoiceDl();
+  } catch {
+    /* the app is still starting */
+  }
+}
 
 const lightQuery = window.matchMedia("(prefers-color-scheme: light)");
 
@@ -275,7 +341,18 @@ async function boot() {
   s = info.settings;
   keys = info.keys;
   applyTheme();
+  naturalVoices = await Bridge.naturalVoices().catch(() => []);
   render();
+  await refreshNatural();
+  void Bridge.onVoiceDownload((p) => {
+    progress = p.stage === "ready" ? null : p;
+    if (p.stage === "ready") void refreshNatural();
+    else renderVoiceDl();
+  });
+  // Loading happens in the background after a download or a voice change.
+  setInterval(() => {
+    if (natural?.installed && !natural.loaded && s.voice.engine === "natural") void refreshNatural();
+  }, 2000);
   void Bridge.onSettings((next) => {
     s = next;
     applyTheme();

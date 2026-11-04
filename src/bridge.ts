@@ -2,7 +2,7 @@
 // in a browser) it falls back to the mock in mock.ts, so the island can be
 // designed and screenshotted without Windows.
 
-import type { Alert, BootInfo, CursorInfo, Intent, Keys, Settings, Speech, ViewState } from "./types";
+import type { Alert, BootInfo, CursorInfo, Intent, Keys, NaturalStatus, NaturalVoice, Settings, Speech, ViewState, VoiceProgress } from "./types";
 
 type Unlisten = () => void;
 
@@ -67,6 +67,10 @@ export const Bridge = {
   testHermes: () => call<string>("test_hermes"),
   testRelay: () => call<string>("test_relay"),
   listVoices: () => call<void>("list_voices"),
+  voiceStatus: () => call<NaturalStatus>("voice_status"),
+  naturalVoices: () => call<NaturalVoice[]>("natural_voices"),
+  voiceDownload: () => call<void>("voice_download"),
+  voiceTest: () => call<void>("voice_test"),
   openSettings: () => call<void>("open_settings"),
   quit: () => call<void>("quit_app"),
   log: (message: string) => call<void>("log_line", { message }),
@@ -80,5 +84,6 @@ export const Bridge = {
   onHeard: (h: (p: { text: string }) => void) => on<{ text: string }>("heard", h),
   onCursor: (h: (p: CursorInfo) => void) => on<CursorInfo>("cursor", h),
   onSettings: (h: (s: Settings) => void) => on<Settings>("settings-changed", h),
+  onVoiceDownload: (h: (p: VoiceProgress) => void) => on<VoiceProgress>("voice-download", h),
   onVoices: (h: (v: { name: string; language: string; male: boolean }[]) => void) => on("voices", h),
 };

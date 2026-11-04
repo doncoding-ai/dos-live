@@ -148,6 +148,9 @@ export interface Settings {
   voice: {
     mode: "wake" | "hotkey" | "off" | string;
     wakeWord: string;
+    /** "natural" (Kokoro, on this PC) or "windows". */
+    engine: "natural" | "windows" | string;
+    naturalVoice: string;
     voiceName: string;
     rate: number;
     speakPings: boolean;
@@ -173,6 +176,25 @@ export interface Settings {
     theme: "dark" | "light" | "system" | string;
     roam: "idle" | "always" | "never" | string;
   };
+}
+
+export interface NaturalStatus {
+  installed: boolean;
+  downloading: boolean;
+  loaded: boolean;
+  sizeMb: number;
+}
+
+export interface NaturalVoice {
+  id: string;
+  label: string;
+}
+
+export interface VoiceProgress {
+  stage: "downloading" | "unpacking" | "ready" | "failed";
+  done: number;
+  total: number;
+  error: string | null;
 }
 
 export interface Keys {

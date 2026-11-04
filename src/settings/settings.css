@@ -266,3 +266,36 @@ code {
 :root.theme-light .btn.go {
   color: #ffffff;
 }
+
+/* Voice: show only the chosen engine's options. */
+.engine-natural .only-windows,
+.engine-windows .only-natural {
+  display: none;
+}
+
+.voice-dl {
+  margin: 4px 0 6px;
+}
+
+.dl-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.dl-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--green);
+  transition: width 240ms ease;
+}
+
+.ok-line {
+  color: var(--green);
+}
+
+.voice-dl .row {
+  margin-bottom: 10px;
+}

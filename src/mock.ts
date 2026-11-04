@@ -143,7 +143,7 @@ const settings: Settings = {
   worlds: worlds.map((x) => ({ id: x.id, name: x.name, short: x.short, color: x.color, boards: ["don"], labels: [], keywords: [], wholeBoards: [], aliases: [] })),
   staleDays: 21,
   dueSoonDays: 3,
-  voice: { mode: "wake", wakeWord: "dos", voiceName: "", rate: 1, speakPings: true, speakAsks: true, hotkey: "Ctrl+Alt+D" },
+  voice: { mode: "wake", wakeWord: "dos", engine: "natural", naturalVoice: "am_puck", voiceName: "", rate: 1, speakPings: true, speakAsks: true, hotkey: "Ctrl+Alt+D" },
   callGuard: true,
   callGuardIgnore: ["SpeechRuntime"],
   hermes: { enabled: true, url: "http://127.0.0.1:8642/v1", model: "hermes-agent" },
@@ -159,6 +159,26 @@ export function mockInvoke(cmd: string, args?: Record<string, unknown>): unknown
     }
     case "state":
       return state;
+    case "voice_status":
+      return { installed: params.get("voice") === "ready", downloading: false, loaded: params.get("voice") === "ready", sizeMb: 156 };
+    case "natural_voices":
+      return [
+        { id: "am_puck", label: "Puck — American, light and upbeat" },
+        { id: "af_heart", label: "Heart — American, warm" },
+        { id: "am_michael", label: "Michael — American, calm" },
+        { id: "bm_george", label: "George — British, steady" },
+      ];
+    case "voice_download": {
+      let done = 0;
+      const t = setInterval(() => {
+        done += 11_000_000;
+        if (done >= 156_493_086) {
+          clearInterval(t);
+          mockEmit("voice-download", { stage: "ready", done: 156_493_086, total: 156_493_086, error: null });
+        } else mockEmit("voice-download", { stage: "downloading", done, total: 156_493_086, error: null });
+      }, 120);
+      return null;
+    }
     case "key_status":
       return { trelloKey: true, trelloToken: true, hermesKey: false };
     case "test_trello":

@@ -38,6 +38,7 @@ needs your call. And it answers when you say "Dos".
   - **Bubble:** the orb bounces around your screen with a little tail while you're away. It zips into the notch when something needs you, and you can throw it.
 
   The theme can be Dark, Light or Match Windows.
+- **A natural voice that runs on your PC.** Dos speaks with Kokoro, an open-source neural voice model, using Puck by default and Heart as the alternative. There are about 20 English voices to choose from in Settings → Voice. It's a one-time 156 MB download of the voice and its engine from the sherpa-onnx releases on GitHub, checked against pinned SHA-256 hashes. Nothing you hear is sent anywhere. Until the download finishes, or if the voice ever fails to load, Dos uses the Windows voice.
 - **Stealth by default.** The island is invisible to screen sharing and
   recording (Teams, Meet, Zoom, OBS). You see it; they don't. When another app
   holds the microphone, Dos goes quiet and stops listening.

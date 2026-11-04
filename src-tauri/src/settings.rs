@@ -38,6 +38,10 @@ pub struct VoiceSettings {
     /// "wake": always listening for "Dos …" · "hotkey": only after the hotkey · "off".
     pub mode: String,
     pub wake_word: String,
+    /// "natural" (Kokoro, on this PC) or "windows" (the built-in voices).
+    pub engine: String,
+    /// Kokoro voice id, e.g. "am_puck".
+    pub natural_voice: String,
     /// Part of a Windows voice name; empty = best male English voice.
     pub voice_name: String,
     pub rate: f64,
@@ -52,6 +56,8 @@ impl Default for VoiceSettings {
         VoiceSettings {
             mode: "wake".into(),
             wake_word: "dos".into(),
+            engine: "natural".into(),
+            natural_voice: crate::natural::DEFAULT_VOICE.into(),
             voice_name: String::new(),
             rate: 1.0,
             speak_pings: true,

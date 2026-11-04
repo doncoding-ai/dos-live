@@ -17,6 +17,7 @@ use dos_core::{build_snapshot, Ask, BoardHealth, Decision, Snapshot, Tracker, Wo
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use crate::natural::{self, Natural};
 use crate::platform::{self, Heard, Voice, VoiceEvent};
 use crate::settings::{self, Settings};
 use crate::trello::Trello;
@@ -100,6 +101,10 @@ pub struct Brain {
     local_asks: Mutex<Vec<LocalAsk>>,
     focus: Mutex<Option<Focus>>,
     voice: Mutex<Option<Voice>>,
+    /// Kokoro, when the natural voice is downloaded.
+    natural: Mutex<Option<Arc<Natural>>>,
+    /// Speech clips sent to the island and not yet played to the end.
+    pending_clips: AtomicU64,
     voice_state: Mutex<VoiceState>,
     speaking_until: Mutex<Instant>,
     speak_seq: AtomicU64,
@@ -154,6 +159,8 @@ impl Brain {
             local_asks: Mutex::new(Vec::new()),
             focus: Mutex::new(None),
             voice: Mutex::new(None),
+            natural: Mutex::new(None),
+            pending_clips: AtomicU64::new(0),
             voice_state: Mutex::new(VoiceState { mode, ..Default::default() }),
             speaking_until: Mutex::new(Instant::now()),
             speak_seq: AtomicU64::new(1),
@@ -524,18 +531,85 @@ impl Brain {
             return;
         }
         *self.last_spoken.lock().unwrap() = clean.clone();
-        let (voice_name, rate) = {
-            let s = self.settings.lock().unwrap();
-            (s.voice.voice_name.clone(), s.voice.rate)
-        };
         let vs = self.voice_state.lock().unwrap().clone();
         if vs.muted || vs.on_call {
             return;
         }
+        let (engine, natural_voice, rate) = {
+            let s = self.settings.lock().unwrap();
+            (s.voice.engine.clone(), s.voice.natural_voice.clone(), s.voice.rate)
+        };
+        if engine == "natural" && natural::installed() {
+            if let Some(n) = self.natural.lock().unwrap().clone() {
+                n.say(clean, &natural_voice, rate as f32);
+                return;
+            }
+        }
+        self.speak_windows(clean);
+    }
+
+    /// The built-in Windows voice — the fallback, and the choice in Settings.
+    fn speak_windows(&self, clean: String) {
+        let (voice_name, rate) = {
+            let s = self.settings.lock().unwrap();
+            (s.voice.voice_name.clone(), s.voice.rate)
+        };
         let id = self.speak_seq.fetch_add(1, Ordering::Relaxed);
         self.speech_texts.lock().unwrap().insert(id, clean.clone());
         if let Some(v) = self.voice.lock().unwrap().as_ref() {
             v.speak(id, clean, voice_name, rate);
+        }
+    }
+
+    /// One clip of speech to the island, which plays clips in order.
+    fn emit_speech(&self, text: String, wav: Vec<u8>) {
+        let vs = self.voice_state.lock().unwrap().clone();
+        if vs.muted || vs.on_call {
+            return;
+        }
+        let dur = speech::wav_duration(&wav);
+        {
+            // Clips queue behind each other: Dos is speaking until the last ends.
+            let mut until = self.speaking_until.lock().unwrap();
+            let start = (*until).max(Instant::now());
+            *until = start + dur + Duration::from_millis(400);
+        }
+        self.pending_clips.fetch_add(1, Ordering::SeqCst);
+        let id = self.speak_seq.fetch_add(1, Ordering::Relaxed);
+        let _ = self.app.emit_to(
+            ISLAND,
+            "speech",
+            Speech {
+                id,
+                text,
+                wav: base64::engine::general_purpose::STANDARD.encode(&wav),
+                millis: dur.as_millis() as u64,
+            },
+        );
+        self.emit_state();
+    }
+
+    fn on_natural(&self, out: natural::Out) {
+        match out {
+            natural::Out::Chunk { text, wav } => self.emit_speech(text, wav),
+            natural::Out::Failed { text, error } => {
+                log::line(format!("natural voice failed ({error}) — using the Windows voice"));
+                self.speak_windows(text);
+            }
+        }
+    }
+
+    pub fn natural_status(&self) -> natural::Status {
+        natural::status(self.natural.lock().unwrap().as_deref())
+    }
+
+    /// Load the natural voice ahead of time (after a download, or a new voice).
+    pub fn warm_natural(&self) {
+        let s = self.settings.lock().unwrap().voice.clone();
+        if s.engine == "natural" {
+            if let Some(n) = self.natural.lock().unwrap().as_ref() {
+                n.warm(&s.natural_voice);
+            }
         }
     }
 
@@ -546,11 +620,22 @@ impl Brain {
     }
 
     pub fn speech_finished(&self, _id: u64) {
-        *self.speaking_until.lock().unwrap() = Instant::now() + Duration::from_millis(250);
+        let left = self
+            .pending_clips
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)))
+            .unwrap_or(1)
+            .saturating_sub(1);
+        if left == 0 {
+            *self.speaking_until.lock().unwrap() = Instant::now() + Duration::from_millis(250);
+        }
         self.emit_state();
     }
 
     pub fn stop_speaking(&self) {
+        if let Some(n) = self.natural.lock().unwrap().as_ref() {
+            n.stop();
+        }
+        self.pending_clips.store(0, Ordering::SeqCst);
         *self.speaking_until.lock().unwrap() = Instant::now();
         let _ = self.app.emit_to(ISLAND, "speech-stop", ());
         self.emit_state();
@@ -562,6 +647,9 @@ impl Brain {
         let me = Arc::clone(self);
         let voice = platform::start_voice(move |ev| me.on_voice_event(ev));
         *self.voice.lock().unwrap() = Some(voice);
+        let me = Arc::clone(self);
+        *self.natural.lock().unwrap() = Some(Arc::new(Natural::start(move |out| me.on_natural(out))));
+        self.warm_natural();
         self.apply_voice_mode();
     }
 
@@ -641,20 +729,8 @@ impl Brain {
                 let _ = self.app.emit("voices", names);
             }
             VoiceEvent::Spoken { id, wav } => {
-                let dur = speech::wav_duration(&wav);
-                *self.speaking_until.lock().unwrap() = Instant::now() + dur + Duration::from_millis(400);
                 let text = self.speech_texts.lock().unwrap().remove(&id).unwrap_or_default();
-                let _ = self.app.emit_to(
-                    ISLAND,
-                    "speech",
-                    Speech {
-                        id,
-                        text,
-                        wav: base64::engine::general_purpose::STANDARD.encode(&wav),
-                        millis: dur.as_millis() as u64,
-                    },
-                );
-                self.emit_state();
+                self.emit_speech(text, wav);
             }
             VoiceEvent::Heard { text, kind, confident } => self.on_heard(text, kind, confident),
         }

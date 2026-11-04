@@ -4,6 +4,7 @@ mod brain;
 mod hermes;
 mod island;
 mod log;
+mod natural;
 mod platform;
 mod secrets;
 mod settings;
@@ -85,6 +86,9 @@ async fn save_settings(app: AppHandle, shared: State<'_, Shared>, settings: Sett
     if old.voice != settings.voice || old.worlds != settings.worlds {
         shared.brain.apply_voice_mode();
     }
+    if old.voice.engine != settings.voice.engine || old.voice.natural_voice != settings.voice.natural_voice {
+        shared.brain.warm_natural();
+    }
     if old.voice.hotkey != settings.voice.hotkey || old.ui.hide_hotkey != settings.ui.hide_hotkey {
         register_hotkeys(&app, &settings);
     }
@@ -137,6 +141,34 @@ async fn move_island(app: AppHandle, shared: State<'_, Shared>, to: String) -> R
         "home" => island::home(&app, &shared.gate),
         _ => return Err("move_island: next or home".into()),
     }
+    Ok(())
+}
+
+/// Natural voice: downloaded? loading? (Settings shows a download button until it is.)
+#[tauri::command]
+async fn voice_status(shared: State<'_, Shared>) -> R<natural::Status> {
+    Ok(shared.brain.natural_status())
+}
+
+/// The voices Settings can offer.
+#[tauri::command]
+async fn natural_voices() -> Vec<natural::VoiceDef> {
+    natural::VOICES.to_vec()
+}
+
+/// One-time download of the natural voice; progress arrives as `voice-download` events.
+#[tauri::command]
+async fn voice_download(app: AppHandle, shared: State<'_, Shared>) -> R<()> {
+    natural::download(app).await?;
+    shared.brain.warm_natural();
+    Ok(())
+}
+
+/// Says a line in the current voice, so a choice can be heard before keeping it.
+#[tauri::command]
+async fn voice_test(shared: State<'_, Shared>) -> R<()> {
+    shared.brain.stop_speaking();
+    shared.brain.speak("Hi Elijah, this is Dos. Three things need you today — Land and Housing first. Say do it, hold, or skip.");
     Ok(())
 }
 
@@ -417,6 +449,10 @@ pub fn run() {
             save_settings,
             state,
             set_rects,
+            voice_status,
+            natural_voices,
+            voice_download,
+            voice_test,
             begin_drag,
             move_island,
             set_keyboard,
