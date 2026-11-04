@@ -620,11 +620,16 @@ impl Brain {
     }
 
     pub fn speech_finished(&self, _id: u64) {
-        let left = self
-            .pending_clips
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)))
-            .unwrap_or(1)
-            .saturating_sub(1);
+        // One clip fewer, never below zero (a compare-and-swap loop works on
+        // every Rust version; fetch_update is deprecated on newer ones).
+        let mut cur = self.pending_clips.load(Ordering::SeqCst);
+        let left = loop {
+            let next = cur.saturating_sub(1);
+            match self.pending_clips.compare_exchange(cur, next, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break next,
+                Err(now) => cur = now,
+            }
+        };
         if left == 0 {
             *self.speaking_until.lock().unwrap() = Instant::now() + Duration::from_millis(250);
         }
